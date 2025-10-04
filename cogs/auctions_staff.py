@@ -2,22 +2,17 @@ import json
 import discord
 from discord.ext import commands
 from discord import app_commands
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone
 
 from .auctions_core import GUILD_ID
 from .auctions_utils import (
     next_daily_release,
-    RARITY_CHANNELS,
-    CARDMAKER_CHANNEL_ID,
-    extract_first_emoji_id,
+    is_after_cutoff,
 )
 
 
 async def assign_batch(conn, queue_choice: str, now: datetime):
     """Détermine le batch_id selon les règles."""
-    cutoff = time(17, 30, tzinfo=timezone.utc)
-    after_cutoff = now.time() >= cutoff
-
     if queue_choice == "normal":
         last = await conn.fetchrow("""
             SELECT batch_id, COUNT(*) AS count
@@ -33,7 +28,7 @@ async def assign_batch(conn, queue_choice: str, now: datetime):
             batch_id = last["batch_id"]
 
     elif queue_choice in ("skip", "cardmaker"):
-        if after_cutoff:
+        if is_after_cutoff(now):
             last_id = await conn.fetchval("SELECT COALESCE(MAX(batch_id), 0) FROM submissions")
             batch_id = (last_id or 0) + 1
         else:
@@ -100,11 +95,9 @@ class StaffReviewView(discord.ui.View):
             if not row:
                 return await interaction.followup.send("❌ Submission not found.", ephemeral=True)
 
-            card_dict = row["card"] if isinstance(row["card"], dict) else json.loads(row["card"])
-            card_embed = discord.Embed.from_dict(card_dict)
-
             now = datetime.now(timezone.utc)
-            batch_id = await assign_batch(core.pg_pool, self.queue_choice, now)
+            async with core.pg_pool.acquire() as conn:
+                batch_id = await assign_batch(conn, self.queue_choice, now)
             release_at = next_daily_release(now)
 
             async with core.pg_pool.acquire() as conn:
