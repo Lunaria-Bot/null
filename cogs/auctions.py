@@ -124,14 +124,15 @@ class Auctions(commands.Cog):
         ):
             await self._process_mazoku_embed(message)
 
-    @commands.Cog.listener())
-    async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if (
-            after.author.bot
-            and after.author.id == MAZOKU_BOT_ID
-            and after.channel.id == MAZOKU_CHANNEL_ID
-        ):
-            await self._process_mazoku_embed(after)
+    @commands.Cog.listener()
+async def on_message_edit(self, before: discord.Message, after: discord.Message):
+    if (
+        after.author.bot
+        and after.author.id == MAZOKU_BOT_ID
+        and after.channel.id == MAZOKU_CHANNEL_ID
+    ):
+        await self._process_mazoku_embed(after)
+
 
     async def _process_mazoku_embed(self, message: discord.Message):
         if not message.embeds:
