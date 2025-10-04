@@ -75,27 +75,48 @@ class Auctions(commands.Cog):
             if message.embeds:
                 embed = message.embeds[0]
                 if embed.image:
-                    owner_name = None
-                    # Look for "Owned by ..." in footer or description
+                    owner_text = None
+                    # Try to parse "Owned by ..." from footer or description
                     if embed.footer and embed.footer.text and "Owned by" in embed.footer.text:
-                        owner_name = embed.footer.text.replace("Owned by", "").strip()
+                        owner_text = embed.footer.text.split("Owned by", 1)[1].strip()
                     elif embed.description and "Owned by" in embed.description:
-                        parts = embed.description.split("Owned by")
+                        parts = embed.description.split("Owned by", 1)
                         if len(parts) > 1:
-                            owner_name = parts[1].split()[0].strip()
+                            owner_text = parts[1].strip()
 
-                    if owner_name:
+                    if owner_text:
+                        # If it's a mention, extract ID; else store by normalized name
+                        owner_id = None
+                        if owner_text.startswith("<@") and owner_text.endswith(">"):
+                            try:
+                                owner_id = int(owner_text.strip("<@!>"))
+                            except Exception:
+                                owner_id = None
+
+                        if owner_id:
+                            key = f"mazoku:card:{owner_id}"
+                        else:
+                            key = f"mazoku:cardname:{owner_text.lower()}"
+
                         await self.redis.set(
-                            f"mazoku:card:{message.id}",
-                            json.dumps({"embed": embed.to_dict(), "owner_name": owner_name}),
+                            key,
+                            json.dumps({"embed": embed.to_dict(), "owner_text": owner_text}),
                             ex=600
                         )
 
     # --- Slash command: auction-submit ---
     @app_commands.command(name="auction-submit", description="Submit your Mazoku card for auction")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def auction_submit(self, interaction: discord.Interaction, message_id: str):
-        data = await self.redis.get(f"mazoku:card:{message_id}")
+    async def auction_submit(self, interaction: discord.Interaction):
+        # Lookup by user ID first
+        data = await self.redis.get(f"mazoku:card:{interaction.user.id}")
+
+        # Fallbacks: display name then username
+        if not data:
+            data = await self.redis.get(f"mazoku:cardname:{interaction.user.display_name.lower()}")
+        if not data:
+            data = await self.redis.get(f"mazoku:cardname:{interaction.user.name.lower()}")
+
         if not data:
             return await interaction.response.send_message(
                 "❌ No Mazoku card detected. Use `/inventory` with Mazoku first.", ephemeral=True
@@ -103,57 +124,80 @@ class Auctions(commands.Cog):
 
         card_data = json.loads(data)
         card_embed = discord.Embed.from_dict(card_data["embed"])
-        owner_name = card_data.get("owner_name")
+        owner_text = card_data.get("owner_text", "").lower()
 
-        # Check ownership
-        if owner_name and owner_name.lower() not in interaction.user.display_name.lower():
-            return await interaction.response.send_message(
-                "❌ You are not the owner of the card.", ephemeral=True
-            )
+        # Ownership check
+        if owner_text.startswith("<@") and owner_text.endswith(">"):
+            try:
+                owner_id = int(owner_text.strip("<@!>"))
+                if interaction.user.id != owner_id:
+                    return await interaction.response.send_message("❌ You are not the owner of the card.", ephemeral=True)
+            except Exception:
+                return await interaction.response.send_message("❌ Could not verify card ownership.", ephemeral=True)
+        else:
+            # Compare against display name or username
+            if (interaction.user.display_name.lower() not in owner_text
+                and interaction.user.name.lower() not in owner_text):
+                return await interaction.response.send_message("❌ You are not the owner of the card.", ephemeral=True)
 
-        # Continue with DM form
+        # Proceed: send DM and open setup view
         dm = await interaction.user.create_dm()
-        await dm.send("Here’s the card I detected from Mazoku:", embed=card_embed,
-                      view=self.AuctionSetupView(self, interaction.user, card_embed))
+        await dm.send(
+            "Here’s the card I detected from Mazoku:",
+            embed=card_embed,
+            view=self.AuctionSetupView(self, interaction.user, card_embed)
+        )
         await interaction.response.send_message("📩 Check your DMs to finish your auction submission.", ephemeral=True)
 
     # --- DM Form ---
     class AuctionSetupView(discord.ui.View):
         def __init__(self, cog, user, card_embed):
             super().__init__(timeout=600)
-            self.cog, self.user, self.card_embed = cog, user, card_embed
-            self.currency, self.rate = None, None
+            self.cog = cog
+            self.user = user
+            self.card_embed = card_embed
+            self.currency = None
+            self.rate = None
 
         @discord.ui.button(label="Set Currency", style=discord.ButtonStyle.blurple)
-        async def set_currency(self, interaction, button):
+        async def set_currency(self, interaction: discord.Interaction, button: discord.ui.Button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             self.currency = "Bloodstones"
             await interaction.response.send_message("✅ Currency set to Bloodstones", ephemeral=True)
 
         @discord.ui.button(label="Set Rate", style=discord.ButtonStyle.gray)
-        async def set_rate(self, interaction, button):
+        async def set_rate(self, interaction: discord.Interaction, button: discord.ui.Button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             await interaction.response.send_modal(self.cog.RateModal(self))
 
         @discord.ui.button(label="Submit Auction", style=discord.ButtonStyle.green)
-        async def submit(self, interaction, button):
+        async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
+
             async with self.cog.pg_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO submissions(user_id, card, currency, rate, status) VALUES($1,$2,$3,$4,'submitted')",
-                    self.user.id, self.card_embed.to_dict(), self.currency, self.rate
+                    self.user.id,
+                    self.card_embed.to_dict(),
+                    self.currency,
+                    self.rate
                 )
+
             await interaction.response.send_message("✅ Auction submitted!", ephemeral=True)
             await self.user.send("Your auction has been submitted and is pending review.")
             self.stop()
 
     class RateModal(discord.ui.Modal, title="Set Auction Rate"):
         rate = discord.ui.TextInput(label="Rate (e.g. 275:1)", required=True)
-        def __init__(self, parent_view): super().__init__(); self.parent_view = parent_view
-        async def on_submit(self, interaction):
+
+        def __init__(self, parent_view):
+            super().__init__()
+            self.parent_view = parent_view
+
+        async def on_submit(self, interaction: discord.Interaction):
             self.parent_view.rate = self.rate.value
             await interaction.response.send_message(f"✅ Rate set to {self.rate.value}", ephemeral=True)
 
@@ -168,14 +212,20 @@ class Auctions(commands.Cog):
 
         embed = discord.Embed(title=f"Auction Submission #{submission_id}", color=discord.Color.gold())
         embed.add_field(name="User", value=f"<@{row['user_id']}>", inline=True)
+
         if row["card"]:
             try:
                 card_embed = discord.Embed.from_dict(row["card"])
                 embed.description = card_embed.title or ""
-                if card_embed.image: embed.set_image(url=card_embed.image.url)
-            except: pass
-        if row["currency"]: embed.add_field(name="Currency", value=row["currency"], inline=True)
-        if row["rate"]: embed.add_field(name="Rate", value=row["rate"], inline=True)
+                if card_embed.image:
+                    embed.set_image(url=card_embed.image.url)
+            except Exception:
+                pass
+
+        if row["currency"]:
+            embed.add_field(name="Currency", value=row["currency"], inline=True)
+        if row["rate"]:
+            embed.add_field(name="Rate", value=row["rate"], inline=True)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -184,7 +234,10 @@ class Auctions(commands.Cog):
     async def check_auctions(self):
         now = datetime.now(timezone.utc)
         async with self.pg_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM submissions WHERE status='approved' AND scheduled_for <= $1", now)
+            rows = await conn.fetch(
+                "SELECT * FROM submissions WHERE status='approved' AND scheduled_for <= $1",
+                now
+            )
             for row in rows:
                 if AUCTION_CHANNEL_ID:
                     channel = self.bot.get_channel(AUCTION_CHANNEL_ID)
@@ -194,11 +247,17 @@ class Auctions(commands.Cog):
                             try:
                                 card_embed = discord.Embed.from_dict(row["card"])
                                 embed.description = card_embed.title or ""
-                                if card_embed.image: embed.set_image(url=card_embed.image.url)
-                            except: pass
+                                if card_embed.image:
+                                    embed.set_image(url=card_embed.image.url)
+                            except Exception:
+                                pass
+
                         await channel.send(embed=embed)
-                        await conn.execute("UPDATE submissions SET status='released' WHERE id=$1", row["id"])
+                        await conn.execute(
+                            "UPDATE submissions SET status='released' WHERE id=$1",
+                            row["id"]
+                        )
 
 
-async def setup(bot): 
+async def setup(bot):
     await bot.add_cog(Auctions(bot))
