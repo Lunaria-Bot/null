@@ -36,13 +36,13 @@ RARITY_CHANNELS = {
 FEE_RECIPIENT_ID = int(os.getenv("FEE_RECIPIENT_ID"))
 
 POSTGRES_DSN = {
-    POSTGRES_DSN = {
     "user": os.getenv("POSTGRES_USER") or os.getenv("PGUSER"),
     "password": os.getenv("POSTGRES_PASSWORD") or os.getenv("PGPASSWORD"),
     "database": os.getenv("POSTGRES_DB") or os.getenv("PGDATABASE"),
     "host": os.getenv("POSTGRES_HOST") or os.getenv("PGHOST"),
     "port": int(os.getenv("POSTGRES_PORT") or os.getenv("PGPORT", "5432")),
 }
+
 
 REDIS_URL = os.getenv("REDIS_URL")
 
