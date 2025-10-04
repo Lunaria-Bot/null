@@ -13,8 +13,6 @@ def get_int_env(name: str, required: bool = True, default: int = 0) -> int:
     """Safely load an environment variable as int."""
     val = os.getenv(name)
     if val is None:
-        if required:
-            return default
         return default
     try:
         return int(val)
@@ -25,10 +23,8 @@ def get_int_env(name: str, required: bool = True, default: int = 0) -> int:
 GUILD_ID = get_int_env("GUILD_ID", required=True)
 MAZOKU_BOT_ID = get_int_env("MAZOKU_BOT_ID", required=True)
 
-# --- Optional IDs (safe defaults to 0) ---
+# --- Optional IDs ---
 AUCTION_CHANNEL_ID = get_int_env("AUCTION_CHANNEL_ID", required=False, default=0)
-STAFF_ALERT_CHANNEL_ID = get_int_env("STAFF_ALERT_CHANNEL_ID", required=False, default=0)
-STAFF_ROLE_ID = get_int_env("STAFF_ROLE_ID", required=False, default=0)
 
 # --- Database / Redis ---
 POSTGRES_DSN = {
@@ -78,22 +74,44 @@ class Auctions(commands.Cog):
         if message.author.bot and message.author.id == MAZOKU_BOT_ID:
             if message.embeds:
                 embed = message.embeds[0]
-                if embed.image and message.mentions:
-                    user = message.mentions[0]
-                    await self.redis.set(f"mazoku:{user.id}:card", json.dumps(embed.to_dict()), ex=600)
-                    await user.send("📩 I detected your Mazoku card. Use `/auction-submit` to continue.")
+                if embed.image:
+                    owner_name = None
+                    # Look for "Owned by ..." in footer or description
+                    if embed.footer and embed.footer.text and "Owned by" in embed.footer.text:
+                        owner_name = embed.footer.text.replace("Owned by", "").strip()
+                    elif embed.description and "Owned by" in embed.description:
+                        parts = embed.description.split("Owned by")
+                        if len(parts) > 1:
+                            owner_name = parts[1].split()[0].strip()
+
+                    if owner_name:
+                        await self.redis.set(
+                            f"mazoku:card:{message.id}",
+                            json.dumps({"embed": embed.to_dict(), "owner_name": owner_name}),
+                            ex=600
+                        )
 
     # --- Slash command: auction-submit ---
     @app_commands.command(name="auction-submit", description="Submit your Mazoku card for auction")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def auction_submit(self, interaction: discord.Interaction):
-        data = await self.redis.get(f"mazoku:{interaction.user.id}:card")
+    async def auction_submit(self, interaction: discord.Interaction, message_id: str):
+        data = await self.redis.get(f"mazoku:card:{message_id}")
         if not data:
             return await interaction.response.send_message(
                 "❌ No Mazoku card detected. Use `/inventory` with Mazoku first.", ephemeral=True
             )
 
-        card_embed = discord.Embed.from_dict(json.loads(data))
+        card_data = json.loads(data)
+        card_embed = discord.Embed.from_dict(card_data["embed"])
+        owner_name = card_data.get("owner_name")
+
+        # Check ownership
+        if owner_name and owner_name.lower() not in interaction.user.display_name.lower():
+            return await interaction.response.send_message(
+                "❌ You are not the owner of the card.", ephemeral=True
+            )
+
+        # Continue with DM form
         dm = await interaction.user.create_dm()
         await dm.send("Here’s the card I detected from Mazoku:", embed=card_embed,
                       view=self.AuctionSetupView(self, interaction.user, card_embed))
@@ -110,7 +128,7 @@ class Auctions(commands.Cog):
         async def set_currency(self, interaction, button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
-            self.currency = "Bloodstones"  # could be a Select menu
+            self.currency = "Bloodstones"
             await interaction.response.send_message("✅ Currency set to Bloodstones", ephemeral=True)
 
         @discord.ui.button(label="Set Rate", style=discord.ButtonStyle.gray)
