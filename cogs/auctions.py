@@ -75,6 +75,8 @@ class Auctions(commands.Cog):
                 rate TEXT,
                 queue TEXT,
                 batch_id INT,
+                fees_paid BOOLEAN,
+                deny_reason TEXT,
                 status TEXT NOT NULL DEFAULT 'submitted',
                 scheduled_for TIMESTAMP,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -181,7 +183,7 @@ class Auctions(commands.Cog):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             self.queue_choice = select.values[0]
-            # Keep the same message, just update the view (so user sees the selection retained)
+            # Update the message to reflect retained selection
             await interaction.response.edit_message(view=self)
 
         # Set Currency → modal to type currency
@@ -213,24 +215,7 @@ class Auctions(commands.Cog):
                     ephemeral=True
                 )
 
-            # Resolve channel by queue choice
-            channel_id = None
-            if self.queue_choice == "cardmaker":
-                channel_id = QUEUE_CARDMAKER_ID
-            elif self.queue_choice == "normal":
-                channel_id = QUEUE_NORMAL_ID
-            elif self.queue_choice == "skip":
-                channel_id = QUEUE_SKIP_ID
-
-            channel = self.cog.bot.get_channel(channel_id) if channel_id else None
-            if not channel:
-                return await interaction.response.send_message(
-                    "❌ Queue channel is not configured. Please contact staff.",
-                    ephemeral=True
-                )
-
-            # Persist submission in DB (get submission_id)
-            submission_id = None
+            # Persist submission in DB and get submission_id
             try:
                 async with self.cog.pg_pool.acquire() as conn:
                     row = await conn.fetchrow(
@@ -242,10 +227,31 @@ class Auctions(commands.Cog):
                         self.rate,
                         self.queue_choice
                     )
-                    submission_id = row["id"]
+                    submission_id = row["id"] if row else None
             except Exception as e:
                 print("❗ DB insert error:", e)
-                # We still proceed to post in the queue
+                submission_id = None
+
+            if not submission_id:
+                return await interaction.response.send_message(
+                    "❌ Database error: submission not saved.",
+                    ephemeral=True
+                )
+
+            # Resolve channel by queue choice
+            if self.queue_choice == "cardmaker":
+                channel_id = QUEUE_CARDMAKER_ID
+            elif self.queue_choice == "normal":
+                channel_id = QUEUE_NORMAL_ID
+            else:
+                channel_id = QUEUE_SKIP_ID
+
+            channel = self.cog.bot.get_channel(channel_id) if channel_id else None
+            if not channel:
+                return await interaction.response.send_message(
+                    "❌ Queue channel is not configured. Please contact staff.",
+                    ephemeral=True
+                )
 
             # Post the embed to the queue channel with staff controls
             try:
@@ -255,12 +261,26 @@ class Auctions(commands.Cog):
                 )
             except Exception as e:
                 print("❗ Error sending to queue channel:", e)
-                return await interaction.response.send_message("❌ Failed to post in the selected queue.", ephemeral=True)
+                return await interaction.response.send_message(
+                    "❌ Failed to post in the selected queue.",
+                    ephemeral=True
+                )
 
-            # Update the original DM message to show submission confirmation
-            await interaction.response.edit_message(content="🎊Card has been submitted 🎊", view=None)
+            # Confirmation embed in DM (like your example)
+            confirmation = discord.Embed(
+                title="🎉 Auction Submission Successful 🎉",
+                color=discord.Color.green()
+            )
+            confirmation.add_field(name="Card", value=self.card_embed.title or "Unknown", inline=False)
+            confirmation.add_field(name="Currency", value=self.currency, inline=True)
+            confirmation.add_field(name="Rate", value=self.rate, inline=True)
+            confirmation.add_field(name="Queue", value=self.queue_choice.capitalize(), inline=True)
+            confirmation.set_footer(text="Good luck with your auction! • 🌟 • " + datetime.now().strftime("%d/%m/%Y %H:%M"))
 
-            # Stop the view (disable further interactions)
+            # Replace the DM message with the confirmation card and remove controls
+            await interaction.response.edit_message(content=None, embed=confirmation, view=None)
+
+            # Stop interactions on this View
             self.stop()
 
     # --- Modals ---
@@ -273,7 +293,7 @@ class Auctions(commands.Cog):
 
         async def on_submit(self, interaction: discord.Interaction):
             self.parent_view.currency = self.currency.value
-            # Update button label dynamically
+            # Update the button label dynamically
             for child in self.parent_view.children:
                 if isinstance(child, discord.ui.Button) and child.label.startswith("Set Currency"):
                     child.label = self.currency.value
@@ -289,7 +309,7 @@ class Auctions(commands.Cog):
 
         async def on_submit(self, interaction: discord.Interaction):
             self.parent_view.rate = self.rate.value
-            # Update button label dynamically
+            # Update the button label dynamically
             for child in self.parent_view.children:
                 if isinstance(child, discord.ui.Button) and child.label.startswith("Set Rate"):
                     child.label = self.rate.value
@@ -303,17 +323,36 @@ class Auctions(commands.Cog):
             self.cog = cog
             self.submission_id = submission_id
             self.queue_choice = queue_choice
-            self.fees_paid = False
 
         @discord.ui.button(label="Fees Paid", style=discord.ButtonStyle.green)
         async def fees_paid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            self.fees_paid = True
-            await interaction.response.send_message("✅ Fees marked as paid", ephemeral=True)
+            if not self.submission_id:
+                return await interaction.response.send_message("❌ Submission not found.", ephemeral=True)
+            try:
+                async with self.cog.pg_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE submissions SET fees_paid = TRUE WHERE id=$1",
+                        self.submission_id
+                    )
+                await interaction.response.send_message("✅ Fees marked as paid", ephemeral=True)
+            except Exception as e:
+                print("❗ Error updating fees:", e)
+                await interaction.response.send_message("❌ Failed to update fees.", ephemeral=True)
 
         @discord.ui.button(label="Fees Not Paid", style=discord.ButtonStyle.red)
         async def fees_not_paid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            self.fees_paid = False
-            await interaction.response.send_message("❌ Fees marked as not paid", ephemeral=True)
+            if not self.submission_id:
+                return await interaction.response.send_message("❌ Submission not found.", ephemeral=True)
+            try:
+                async with self.cog.pg_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE submissions SET fees_paid = FALSE WHERE id=$1",
+                        self.submission_id
+                    )
+                await interaction.response.send_message("❌ Fees marked as not paid", ephemeral=True)
+            except Exception as e:
+                print("❗ Error updating fees:", e)
+                await interaction.response.send_message("❌ Failed to update fees.", ephemeral=True)
 
         @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
         async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -342,23 +381,24 @@ class Auctions(commands.Cog):
         async def deny_reason_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not self.submission_id:
                 return await interaction.response.send_message("❌ Submission not found.", ephemeral=True)
-            await interaction.response.send_modal(self.cog.DenyReasonModal(self.submission_id))
+            await interaction.response.send_modal(self.cog.DenyReasonModal(self.cog, self.submission_id))
 
     class DenyReasonModal(discord.ui.Modal, title="Deny with reason"):
         reason = discord.ui.TextInput(label="Reason", style=discord.TextStyle.paragraph, required=True)
 
-        def __init__(self, submission_id: int):
+        def __init__(self, cog: "Auctions", submission_id: int):
             super().__init__()
+            self.cog = cog
             self.submission_id = submission_id
 
         async def on_submit(self, interaction: discord.Interaction):
             try:
-                async with interaction.client.get_cog("Auctions").pg_pool.acquire() as conn:
+                async with self.cog.pg_pool.acquire() as conn:
                     await conn.execute(
-                        "UPDATE submissions SET status='denied', rate=rate WHERE id=$1",  # status only
-                        self.submission_id
+                        "UPDATE submissions SET status='denied', deny_reason=$1 WHERE id=$2",
+                        self.reason.value, self.submission_id
                     )
-                await interaction.response.send_message(f"❌ Card denied. Reason: {self.reason.value}", ephemeral=True)
+                await interaction.response.send_message("❌ Card denied with reason saved.", ephemeral=True)
             except Exception as e:
                 print("❗ Error denying with reason:", e)
                 await interaction.response.send_message("❌ Failed to deny card.", ephemeral=True)
@@ -374,23 +414,22 @@ class Auctions(commands.Cog):
         """
         async with self.pg_pool.acquire() as conn:
             if queue_choice == "normal":
-                # Find latest batch_id for normal queue among accepted
+                # Get latest accepted batch stats
                 last = await conn.fetchrow(
                     "SELECT batch_id, COUNT(*) AS count FROM submissions "
                     "WHERE queue='normal' AND status='accepted' "
                     "GROUP BY batch_id ORDER BY batch_id DESC LIMIT 1"
                 )
                 if (not last) or (last["batch_id"] is None) or (last["count"] >= 15):
-                    # Create new batch_id
+                    # Create new batch_id based on max existing
                     last_id_row = await conn.fetchrow(
                         "SELECT COALESCE(MAX(batch_id), 0) AS max_id FROM submissions WHERE queue='normal'"
                     )
-                    next_batch_id = (last_id_row["max_id"] or 0) + 1
-                    batch_id = next_batch_id
+                    batch_id = (last_id_row["max_id"] or 0) + 1
                 else:
                     batch_id = last["batch_id"]
             else:
-                # Unlimited queues: batch_id 1 (or keep existing max + 1 pattern if you prefer)
+                # Unlimited queues: batch_id = 1
                 batch_id = 1
 
             await conn.execute(
@@ -428,6 +467,10 @@ class Auctions(commands.Cog):
             embed.add_field(name="Queue", value=row["queue"], inline=True)
         if row["batch_id"]:
             embed.add_field(name="Batch", value=str(row["batch_id"]), inline=True)
+        if row["fees_paid"] is not None:
+            embed.add_field(name="Fees", value="Paid" if row["fees_paid"] else "Not paid", inline=True)
+        if row["deny_reason"]:
+            embed.add_field(name="Deny reason", value=row["deny_reason"], inline=False)
         if row["status"]:
             embed.add_field(name="Status", value=row["status"], inline=True)
 
