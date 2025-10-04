@@ -241,12 +241,12 @@ class Auctions(commands.Cog):
 
         # Ask using the human-readable labels
         questions_text = [
-            "1/6. Card details",
-            "2/6. Currency preference(s)",
-            "3/6. Rate (BS:MS)",
-            "4/6. Screenshot (URL or attach an image)",
-            "5/6. Free skip used",
-            f"6/6. Fees confirmation (send fees to <@{FEE_RECIPIENT_ID}> then type 'sent')",
+            "1/6. Please enter the details of the card. ONE card at a time only. If it’s an event card, please mention the event (e.g. SR Emilia V1 Halloween/SR Emilia V1 Christmas).",
+            "2/6. Please insert your currency preference(s). (example: Bloodstones / Moonstones)",
+            "3/6. If accepting Bloodstones and Moonstones, please enter your Bloodstones to Moonstones rate. (example: 275:1)",
+            "4/6. Please add the screenshot of the card. Make sure the version number is clearly seen.(URL or Attachement)",
+            "5/6. If you're a server booster or clan member, are you using your free queue skip? (Boosters and clan members can use a free queue skip once every 2 weeks, just say no if you're not)",
+            f"6/6. Send the auction fees to <@{FEE_RECIPIENT_ID}> by using the Mazoku command, /trade create.\nType 'sent' once done.",
         ]
 
         answers: List[str] = []
