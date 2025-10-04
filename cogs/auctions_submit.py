@@ -4,12 +4,15 @@ from discord.ext import commands
 from discord import app_commands
 
 from .auctions_core import GUILD_ID
-from .auctions_utils import (
-    RARITY_CHANNELS,
-    CARDMAKER_CHANNEL_ID,
-    extract_first_emoji_id,
-    strip_discord_emojis,
-)
+from .auctions_utils import strip_discord_emojis
+
+# --- Queue channel IDs ---
+QUEUE_CHANNELS = {
+    "skip": 1308385490931810434,
+    "normal": 1304100031388844114,
+    "cardmaker": 1395404596230361209,
+}
+
 
 class AuctionsSubmit(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -89,7 +92,6 @@ class AuctionsSubmit(commands.Cog):
                 return await interaction.response.send_message("❌ Core not ready.", ephemeral=True)
 
             try:
-                # ✅ Réponse immédiate
                 await interaction.response.defer(ephemeral=True)
 
                 # Insertion DB
@@ -105,20 +107,14 @@ class AuctionsSubmit(commands.Cog):
                     )
                     submission_id = row["id"]
 
-                # Déterminer le salon cible
-                if self.queue_choice == "cardmaker":
-                    channel_id = CARDMAKER_CHANNEL_ID
-                else:
-                    rarity_id = extract_first_emoji_id(self.card_embed.description)
-                    channel_id = RARITY_CHANNELS.get(rarity_id)
+                # --- Envoi dans le salon de queue ---
+                queue_channel_id = QUEUE_CHANNELS.get(self.queue_choice)
+                queue_channel = self.bot.get_channel(queue_channel_id)
+                if not queue_channel:
+                    return await interaction.followup.send("❌ Queue channel not found.", ephemeral=True)
 
-                channel = self.bot.get_channel(channel_id) if channel_id else None
-                if not channel:
-                    return await interaction.followup.send("❌ Target channel not found.", ephemeral=True)
-
-                # Poster et créer un thread
                 from .auctions_staff import StaffReviewView
-                msg = await channel.send(
+                msg = await queue_channel.send(
                     embed=self.card_embed,
                     view=StaffReviewView(self.bot, submission_id, self.queue_choice)
                 )
@@ -128,10 +124,10 @@ class AuctionsSubmit(commands.Cog):
                 async with core.pg_pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE submissions SET queue_message_id=$1, queue_channel_id=$2, queue_thread_id=$3 WHERE id=$4",
-                        msg.id, channel.id, thread.id, submission_id
+                        msg.id, queue_channel.id, thread.id, submission_id
                     )
 
-                await interaction.followup.send("✅ Submission sent successfully!", ephemeral=True)
+                await interaction.followup.send("✅ Submission sent to queue successfully!", ephemeral=True)
                 self.stop()
 
             except Exception as e:
