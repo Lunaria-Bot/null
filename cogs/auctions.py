@@ -1,15 +1,36 @@
 # cogs/auctions.py
-import os, json, asyncio
+import os
+import json
 from datetime import datetime, timezone
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import asyncpg, redis.asyncio as redis
+import asyncpg
+import redis.asyncio as redis
 
-GUILD_ID = int(os.getenv("GUILD_ID"))
-MAZOKU_BOT_ID = int(os.getenv("MAZOKU_BOT_ID"))
-AUCTION_CHANNEL_ID = int(os.getenv("AUCTION_CHANNEL_ID"))
+# ---------- Safe environment loader ----------
+def get_int_env(name: str, required: bool = True, default: int = 0) -> int:
+    """Safely load an environment variable as int."""
+    val = os.getenv(name)
+    if val is None:
+        if required:
+            raise RuntimeError(f"Missing required environment variable: {name}")
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        raise RuntimeError(f"Environment variable {name} must be an integer, got: {val}")
 
+# --- Required IDs ---
+GUILD_ID = get_int_env("GUILD_ID")
+MAZOKU_BOT_ID = get_int_env("MAZOKU_BOT_ID")
+AUCTION_CHANNEL_ID = get_int_env("AUCTION_CHANNEL_ID")
+
+# --- Optional IDs ---
+STAFF_ALERT_CHANNEL_ID = get_int_env("STAFF_ALERT_CHANNEL_ID", required=False, default=0)
+STAFF_ROLE_ID = get_int_env("STAFF_ROLE_ID", required=False, default=0)
+
+# --- Database / Redis ---
 POSTGRES_DSN = {
     "user": os.getenv("POSTGRES_USER") or os.getenv("PGUSER"),
     "password": os.getenv("POSTGRES_PASSWORD") or os.getenv("PGPASSWORD"),
@@ -45,8 +66,10 @@ class Auctions(commands.Cog):
             """)
 
     async def cog_unload(self):
-        if self.redis: await self.redis.close()
-        if self.pg_pool: await self.pg_pool.close()
+        if self.redis:
+            await self.redis.close()
+        if self.pg_pool:
+            await self.pg_pool.close()
         self.check_auctions.cancel()
 
     # --- Detect Mazoku messages ---
@@ -65,7 +88,9 @@ class Auctions(commands.Cog):
     async def auction_submit(self, interaction: discord.Interaction):
         data = await self.redis.get(f"mazoku:{interaction.user.id}:card")
         if not data:
-            return await interaction.response.send_message("❌ No Mazoku card detected. Use `/inventory` with Mazoku first.", ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ No Mazoku card detected. Use `/inventory` with Mazoku first.", ephemeral=True
+            )
 
         card_embed = discord.Embed.from_dict(json.loads(data))
         dm = await interaction.user.create_dm()
@@ -109,7 +134,7 @@ class Auctions(commands.Cog):
     class RateModal(discord.ui.Modal, title="Set Auction Rate"):
         rate = discord.ui.TextInput(label="Rate (e.g. 275:1)", required=True)
         def __init__(self, parent_view): super().__init__(); self.parent_view = parent_view
-        async def on_submit(self, interaction): 
+        async def on_submit(self, interaction):
             self.parent_view.rate = self.rate.value
             await interaction.response.send_message(f"✅ Rate set to {self.rate.value}", ephemeral=True)
 
@@ -154,4 +179,5 @@ class Auctions(commands.Cog):
                     await conn.execute("UPDATE submissions SET status='released' WHERE id=$1", row["id"])
 
 
-async def setup(bot): await bot.add_cog(Auctions(bot))
+async def setup(bot): 
+    await bot.add_cog(Auctions(bot))
