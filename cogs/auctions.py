@@ -37,11 +37,11 @@ RARITY_CHANNELS = {
 }
 CARDMAKER_CHANNEL_ID = 1395405043431116871
 
-# --- Release scheduling (daily at specific time) ---
-RELEASE_HOUR_UTC = 21   # from <t:1759593420:t> → 21:57 UTC
+# --- Release scheduling (daily at specific time UTC) ---
+RELEASE_HOUR_UTC = 21
 RELEASE_MINUTE_UTC = 57
 
-# --- Auction release channel (where new auctions are posted at release time) ---
+# --- Auction release channel (for daily release posts) ---
 AUCTION_CHANNEL_ID = get_int_env("AUCTION_CHANNEL_ID", required=False, default=0)
 
 # --- Database / Redis ---
@@ -54,12 +54,11 @@ POSTGRES_DSN = {
 }
 REDIS_URL = os.getenv("REDIS_URL")
 
-# --- Utility: strip all Discord custom emojis from text ---
+# --- Utility ---
 EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 def strip_discord_emojis(text: str) -> str:
     return EMOJI_RE.sub("", text).strip()
 
-# --- Utility: next daily release datetime (UTC) ---
 def next_daily_release(now_utc: datetime) -> datetime:
     target = now_utc.replace(hour=RELEASE_HOUR_UTC, minute=RELEASE_MINUTE_UTC, second=0, microsecond=0)
     if target <= now_utc:
@@ -81,7 +80,6 @@ class Auctions(commands.Cog):
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
         self.pg_pool = await asyncpg.create_pool(**POSTGRES_DSN)
 
-        # Ensure schema: add technical columns to track messages and closing state
         async with self.pg_pool.acquire() as conn:
             await conn.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
@@ -96,16 +94,15 @@ class Auctions(commands.Cog):
                 deny_reason TEXT,
                 status TEXT NOT NULL DEFAULT 'submitted',
                 scheduled_for TIMESTAMP,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                queue_message_id BIGINT,
+                queue_channel_id BIGINT,
+                queue_thread_id BIGINT,
+                released_message_id BIGINT,
+                released_channel_id BIGINT,
+                closed BOOLEAN DEFAULT FALSE
             );
             """)
-            # Add tracking columns if not exist
-            await conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS queue_message_id BIGINT")
-            await conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS queue_channel_id BIGINT")
-            await conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS queue_thread_id BIGINT")
-            await conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS released_message_id BIGINT")
-            await conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS released_channel_id BIGINT")
-            await conn.execute("ALTER TABLE submissions ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT FALSE")
 
     async def cog_unload(self):
         if self.redis:
@@ -114,7 +111,7 @@ class Auctions(commands.Cog):
             await self.pg_pool.close()
         self.check_auctions.cancel()
 
-    # --- Capture Mazoku card embeds and cache by owner ---
+    # --- Capture Mazoku card embeds ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if (
@@ -125,14 +122,13 @@ class Auctions(commands.Cog):
             await self._process_mazoku_embed(message)
 
     @commands.Cog.listener()
-async def on_message_edit(self, before: discord.Message, after: discord.Message):
-    if (
-        after.author.bot
-        and after.author.id == MAZOKU_BOT_ID
-        and after.channel.id == MAZOKU_CHANNEL_ID
-    ):
-        await self._process_mazoku_embed(after)
-
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if (
+            after.author.bot
+            and after.author.id == MAZOKU_BOT_ID
+            and after.channel.id == MAZOKU_CHANNEL_ID
+        ):
+            await self._process_mazoku_embed(after)
 
     async def _process_mazoku_embed(self, message: discord.Message):
         if not message.embeds:
@@ -164,7 +160,6 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
             card_embed.title = strip_discord_emojis(card_embed.title)
 
         dm = await interaction.user.create_dm()
-        # Simple view: we assume rate/currency/queue are set elsewhere or defaults; you can extend with modals if needed
         await dm.send(
             "Here is your submitted card",
             embed=card_embed,
@@ -172,7 +167,7 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
         )
         await interaction.response.send_message("📩 Check your DMs to finish your auction submission.", ephemeral=True)
 
-    # --- DM Form (simplifié) ---
+    # --- DM Form ---
     class AuctionSetupView(discord.ui.View):
         def __init__(self, cog: "Auctions", user: discord.User, card_embed: discord.Embed):
             super().__init__(timeout=600)
@@ -181,7 +176,7 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
             self.card_embed = card_embed
             self.currency = "Coins"
             self.rate = "1:1"
-            self.queue_choice = "normal"  # default; change as needed
+            self.queue_choice = "normal"
 
         @discord.ui.select(
             placeholder="Choose a queue",
@@ -202,7 +197,6 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
 
-            # Insert into DB
             async with self.cog.pg_pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
@@ -225,16 +219,14 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
 
             channel = self.cog.bot.get_channel(channel_id) if channel_id else None
             if not channel:
-                return await interaction.response.send_message("❌ Salon introuvable (rareté inconnue).", ephemeral=True)
+                return await interaction.response.send_message("❌ Salon introuvable.", ephemeral=True)
 
-            # Post to queue and create thread
             msg = await channel.send(
                 embed=self.card_embed,
                 view=self.cog.StaffReviewView(self.cog, submission_id, self.queue_choice)
             )
             thread = await msg.create_thread(name=f"Auction #{submission_id} – {self.card_embed.title or 'Card'}")
 
-            # Save message/thread refs
             async with self.cog.pg_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE submissions SET queue_message_id=$1, queue_channel_id=$2, queue_thread_id=$3 WHERE id=$4",
@@ -244,7 +236,7 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
             await interaction.response.send_message("✅ Soumission envoyée.", ephemeral=True)
             self.stop()
 
-    # --- Staff review view with embed updates + auto DM to user ---
+    # --- StaffReviewView (accept/deny + embed updates + DM user) ---
     class StaffReviewView(discord.ui.View):
         def __init__(self, cog: "Auctions", submission_id: int, queue_choice: str):
             super().__init__(timeout=None)
@@ -335,7 +327,6 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
                     "UPDATE submissions SET status='denied', deny_reason=$1 WHERE id=$2",
                     self.reason.value, self.submission_id
                 )
-            # Update embed and remove buttons
             if interaction.message and interaction.message.embeds:
                 embed = interaction.message.embeds[0].copy()
                 desc = embed.description or ""
@@ -343,7 +334,9 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
                 embed.description = desc
                 embed.color = discord.Color.red()
                 await interaction.message.edit(embed=embed, view=None)
-            await self.cog.StaffReviewView.notify_user(self, "denied", reason=self.reason.value)
+            # Notify user
+            view = Auctions.StaffReviewView(self.cog, self.submission_id, queue_choice="normal")
+            await view.notify_user("denied", reason=self.reason.value)
             await interaction.response.send_message("Card denied with reason", ephemeral=False)
 
     # --- Batch management (assign batch and schedule for next daily release) ---
@@ -366,7 +359,6 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
                 else:
                     batch_id = last["batch_id"]
             else:
-                # For skip and cardmaker, use batch 1 (or customize)
                 batch_id = 1
 
             await conn.execute(
@@ -403,7 +395,6 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
                     embed.add_field(name=batch_name, value="\n".join(batch_lines), inline=False)
                     batch_lines = []
                 current_batch = b
-                # Name by created_at of first item in batch, or today's date if null
                 created_dt = row["created_at"] or datetime.now(timezone.utc)
                 batch_name = f"Batch {created_dt.strftime('%d/%m/%y')}"
             batch_lines.append(
@@ -422,17 +413,16 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
         target = now_utc.replace(hour=RELEASE_HOUR_UTC, minute=RELEASE_MINUTE_UTC, second=0, microsecond=0)
         today_key = now_utc.strftime("%Y-%m-%d")
 
-        # Ensure we run once per day at the target minute
         last_run_day = await self.redis.get(self.last_release_marker_key)
         if now_utc >= target and (last_run_day != today_key):
-            # 1) Close previous released auctions (if not closed yet)
             async with self.pg_pool.acquire() as conn:
+                # 1) Close previous released auctions not closed yet
                 prev_rows = await conn.fetch(
                     "SELECT id, queue_channel_id, queue_message_id, closed FROM submissions WHERE status='released' AND closed=FALSE"
                 )
                 for r in prev_rows:
                     ch = self.bot.get_channel(r["queue_channel_id"]) if r["queue_channel_id"] else None
-                    if ch:
+                    if ch and r["queue_message_id"]:
                         try:
                             msg = await ch.fetch_message(r["queue_message_id"])
                             if msg and msg.embeds:
@@ -458,7 +448,6 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
                     except Exception:
                         card_embed = discord.Embed(title="Auction Card", description="(embed parsing failed)")
 
-                    # Tag as started
                     emb = card_embed.copy()
                     desc = emb.description or ""
                     desc += "\nAuction started ✅"
@@ -472,18 +461,14 @@ async def on_message_edit(self, before: discord.Message, after: discord.Message)
                             m.id, release_channel.id, r["id"]
                         )
                     else:
-                        await conn.execute(
-                            "UPDATE submissions SET status='released' WHERE id=$1",
-                            r["id"]
-                        )
+                        await conn.execute("UPDATE submissions SET status='released' WHERE id=$1", r["id"])
 
-                # mark as run today
                 await self.redis.set(self.last_release_marker_key, today_key)
 
     @check_auctions.before_loop
     async def before_check_auctions(self):
         await self.bot.wait_until_ready()
 
-    # --- Setup function to add cog ---
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(Auctions(bot))
