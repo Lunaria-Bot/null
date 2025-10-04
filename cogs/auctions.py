@@ -3,7 +3,7 @@ import os
 import asyncio
 import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, List, Any
 
 import discord
 from discord.ext import commands
@@ -12,7 +12,7 @@ from discord import app_commands
 import asyncpg
 import redis.asyncio as redis
 
-# --------- Load from Railway environment ---------
+# --------- Load from environment ---------
 GUILD_ID = int(os.getenv("GUILD_ID"))
 
 STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID"))
@@ -35,6 +35,7 @@ RARITY_CHANNELS = {
 
 FEE_RECIPIENT_ID = int(os.getenv("FEE_RECIPIENT_ID"))
 
+# Compat PG* (Railway/Heroku) et POSTGRES_* (local)
 POSTGRES_DSN = {
     "user": os.getenv("POSTGRES_USER") or os.getenv("PGUSER"),
     "password": os.getenv("POSTGRES_PASSWORD") or os.getenv("PGPASSWORD"),
@@ -42,7 +43,6 @@ POSTGRES_DSN = {
     "host": os.getenv("POSTGRES_HOST") or os.getenv("PGHOST"),
     "port": int(os.getenv("POSTGRES_PORT") or os.getenv("PGPORT", "5432")),
 }
-
 
 REDIS_URL = os.getenv("REDIS_URL")
 
@@ -57,7 +57,8 @@ class Auctions(commands.Cog):
 
     # ---------- Lifecycle ----------
     async def cog_load(self):
-        self.redis = redis.from_url(REDIS_URL, decode_responses=True)
+        if REDIS_URL:
+            self.redis = redis.from_url(REDIS_URL, decode_responses=True)
         self.pg_pool = await asyncpg.create_pool(**POSTGRES_DSN)
 
         async with self.pg_pool.acquire() as conn:
@@ -117,6 +118,19 @@ class Auctions(commands.Cog):
             await dm.send(message)
         except discord.Forbidden:
             pass
+
+    def _ensure_list_answers(self, answers: Any) -> List[str]:
+        if isinstance(answers, list):
+            return answers
+        if isinstance(answers, str):
+            try:
+                parsed = json.loads(answers)
+                if isinstance(parsed, list):
+                    return parsed
+                return [answers]
+            except Exception:
+                return [answers]
+        return [str(answers)]
 
     # ---------- Application entry ----------
     @app_commands.command(name="auction", description="Apply for an auction")
@@ -186,7 +200,7 @@ class Auctions(commands.Cog):
             f"6/6. Send the auction fees to <@{FEE_RECIPIENT_ID}> by using the Mazoku command, /trade create.\nType 'sent' once done."
         ]
 
-        answers = []
+        answers: List[str] = []
 
         def check(m: discord.Message):
             return m.author.id == user.id and m.channel.id == dm.id
@@ -221,9 +235,9 @@ class Auctions(commands.Cog):
 
         await dm.send(f"✅ Your application has been submitted successfully! (ID: {submission_id})")
 
-        # Post summary in queue channel + ping staff
+        # ---------- Post summary in queue channel + ping staff ----------
         queue_channel_id = QUEUE_CHANNELS.get(queue)
-        if queue_channel_id:
+        if queue_channel_id and guild:
             channel = guild.get_channel(queue_channel_id)
             if channel:
                 embed = discord.Embed(
@@ -233,14 +247,18 @@ class Auctions(commands.Cog):
                 )
                 embed.add_field(name="Queue", value=queue, inline=True)
                 embed.add_field(name="Submitted by", value=user.mention, inline=True)
-                for i, ans in enumerate(answers, start=1):
+                # Ajoute jusqu'à 20 Qx pour rester sous la limite
+                for i, ans in enumerate(answers[:20], start=1):
                     embed.add_field(name=f"Q{i}", value=(ans or "—"), inline=False)
+                if len(answers) > 20:
+                    embed.add_field(name="…", value=f"{len(answers) - 20} more answers not shown", inline=False)
                 await channel.send(embed=embed)
 
-        staff_role = guild.get_role(STAFF_ROLE_ID)
-        alert_channel = guild.get_channel(STAFF_ALERT_CHANNEL_ID)
-        if staff_role and alert_channel:
-            await alert_channel.send(f"📢 {staff_role.mention} New submission #{submission_id} in {queue}. Use `/auction-review {submission_id}` to review.")
+        if guild:
+            staff_role = guild.get_role(STAFF_ROLE_ID)
+            alert_channel = guild.get_channel(STAFF_ALERT_CHANNEL_ID)
+            if staff_role and alert_channel:
+                await alert_channel.send(f"📢 {staff_role.mention} New submission #{submission_id} in {queue}. Use `/auction-review {submission_id}` to review.")
 
     # ---------- Review command ----------
     @app_commands.command(name="auction-review", description="Review a specific auction submission")
@@ -252,7 +270,7 @@ class Auctions(commands.Cog):
             await interaction.response.send_message("❌ Submission not found.", ephemeral=True)
             return
 
-        answers = row["answers"]
+        answers = self._ensure_list_answers(row["answers"])
         user_id = row["user_id"]
         queue = row["queue"]
         status = row["status"]
@@ -265,8 +283,16 @@ class Auctions(commands.Cog):
         embed.add_field(name="User", value=f"<@{user_id}>", inline=True)
         embed.add_field(name="Queue", value=queue, inline=True)
         embed.add_field(name="Status", value=status, inline=True)
-        for i, ans in enumerate(answers, start=1):
+
+        # Limite à 20 champs pour rester < 25 au total
+        for i, ans in enumerate(answers[:20], start=1):
             embed.add_field(name=f"Q{i}", value=(ans or "—"), inline=False)
+        if len(answers) > 20:
+            embed.add_field(
+                name="…",
+                value=f"{len(answers) - 20} additional answers not displayed",
+                inline=False
+            )
 
         view = self.ReviewView(self, submission_id, user_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -365,7 +391,7 @@ class Auctions(commands.Cog):
 
         posted_count = 0
         for row in subs:
-            answers = row["answers"]
+            answers = self._ensure_list_answers(row["answers"])
             user_id = row["user_id"]
             queue = row["queue"]
 
@@ -377,11 +403,11 @@ class Auctions(commands.Cog):
                 continue
 
             post_channel_id = RARITY_CHANNELS.get(rarity) or QUEUE_CHANNELS.get(queue)
-            channel = guild.get_channel(post_channel_id)
+            channel = guild.get_channel(post_channel_id) if guild else None
             if not channel:
                 continue
 
-            seller = guild.get_member(user_id)
+            seller = guild.get_member(user_id) if guild else None
             desc_lines = [
                 f"• Card details: {answers[0] if len(answers) > 0 else '—'}",
                 f"• Currency preference(s): {answers[1] if len(answers) > 1 else '—'}",
@@ -401,6 +427,14 @@ class Auctions(commands.Cog):
             embed.add_field(name="Seller", value=(seller.mention if seller else f"<@{user_id}>"), inline=True)
             embed.add_field(name="Queue", value=queue, inline=True)
 
+            # Sécurité: ne jamais dépasser 25 champs
+            if len(embed.fields) > 20:
+                # En cas d'ajout imprévu, on résume
+                embed.clear_fields()
+                embed.add_field(name="Info", value="Too many fields, compact summary shown.", inline=False)
+                embed.add_field(name="Seller", value=(seller.mention if seller else f"<@{user_id}>"), inline=True)
+                embed.add_field(name="Queue", value=queue, inline=True)
+
             await channel.send(embed=embed)
             posted_count += 1
 
@@ -415,7 +449,7 @@ class Auctions(commands.Cog):
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_list(self, interaction: discord.Interaction, status: Optional[str] = None, queue: Optional[str] = None):
         query = "SELECT id, user_id, queue, status FROM submissions WHERE 1=1"
-        params = []
+        params: List[Any] = []
         if status:
             params.append(status)
             query += f" AND status=${len(params)}"
