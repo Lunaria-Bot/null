@@ -14,7 +14,7 @@ def get_int_env(name: str, required: bool = True, default: int = 0) -> int:
     val = os.getenv(name)
     if val is None:
         if required:
-            raise RuntimeError(f"Missing required environment variable: {name}")
+            return default
         return default
     try:
         return int(val)
@@ -22,11 +22,11 @@ def get_int_env(name: str, required: bool = True, default: int = 0) -> int:
         raise RuntimeError(f"Environment variable {name} must be an integer, got: {val}")
 
 # --- Required IDs ---
-GUILD_ID = get_int_env("GUILD_ID")
-MAZOKU_BOT_ID = get_int_env("MAZOKU_BOT_ID")
-AUCTION_CHANNEL_ID = get_int_env("AUCTION_CHANNEL_ID")
+GUILD_ID = get_int_env("GUILD_ID", required=True)
+MAZOKU_BOT_ID = get_int_env("MAZOKU_BOT_ID", required=True)
 
-# --- Optional IDs ---
+# --- Optional IDs (safe defaults to 0) ---
+AUCTION_CHANNEL_ID = get_int_env("AUCTION_CHANNEL_ID", required=False, default=0)
 STAFF_ALERT_CHANNEL_ID = get_int_env("STAFF_ALERT_CHANNEL_ID", required=False, default=0)
 STAFF_ROLE_ID = get_int_env("STAFF_ROLE_ID", required=False, default=0)
 
@@ -166,17 +166,18 @@ class Auctions(commands.Cog):
         async with self.pg_pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM submissions WHERE status='approved' AND scheduled_for <= $1", now)
             for row in rows:
-                channel = self.bot.get_channel(AUCTION_CHANNEL_ID)
-                if channel:
-                    embed = discord.Embed(title="Auction Started!", color=discord.Color.green())
-                    if row["card"]:
-                        try:
-                            card_embed = discord.Embed.from_dict(row["card"])
-                            embed.description = card_embed.title or ""
-                            if card_embed.image: embed.set_image(url=card_embed.image.url)
-                        except: pass
-                    await channel.send(embed=embed)
-                    await conn.execute("UPDATE submissions SET status='released' WHERE id=$1", row["id"])
+                if AUCTION_CHANNEL_ID:
+                    channel = self.bot.get_channel(AUCTION_CHANNEL_ID)
+                    if channel:
+                        embed = discord.Embed(title="Auction Started!", color=discord.Color.green())
+                        if row["card"]:
+                            try:
+                                card_embed = discord.Embed.from_dict(row["card"])
+                                embed.description = card_embed.title or ""
+                                if card_embed.image: embed.set_image(url=card_embed.image.url)
+                            except: pass
+                        await channel.send(embed=embed)
+                        await conn.execute("UPDATE submissions SET status='released' WHERE id=$1", row["id"])
 
 
 async def setup(bot): 
