@@ -62,7 +62,8 @@ class AuctionsSubmit(commands.Cog):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             self.queue_choice = select.values[0]
-            await interaction.response.edit_message(view=self)
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(f"📂 Queue set to **{self.queue_choice}**", ephemeral=True)
 
         @discord.ui.button(label="Set Currency", style=discord.ButtonStyle.blurple)
         async def set_currency(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -87,7 +88,10 @@ class AuctionsSubmit(commands.Cog):
             if core is None or core.pg_pool is None:
                 return await interaction.response.send_message("❌ Core not ready.", ephemeral=True)
 
-            # Insert into DB
+            # ✅ Réponse immédiate
+            await interaction.response.defer(ephemeral=True)
+
+            # Insertion DB
             async with core.pg_pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
@@ -100,7 +104,7 @@ class AuctionsSubmit(commands.Cog):
                 )
                 submission_id = row["id"]
 
-            # Determine target channel by rarity or cardmaker queue
+            # Déterminer le salon cible
             if self.queue_choice == "cardmaker":
                 channel_id = CARDMAKER_CHANNEL_ID
             else:
@@ -109,24 +113,24 @@ class AuctionsSubmit(commands.Cog):
 
             channel = self.bot.get_channel(channel_id) if channel_id else None
             if not channel:
-                return await interaction.response.send_message("❌ Target channel not found (rarity unknown).", ephemeral=True)
+                return await interaction.followup.send("❌ Target channel not found (rarity unknown).", ephemeral=True)
 
-            # Post to queue and create thread
-            from .auctions_staff import StaffReviewView  # local import to avoid circular at load time
+            # Poster et créer un thread
+            from .auctions_staff import StaffReviewView
             msg = await channel.send(
                 embed=self.card_embed,
                 view=StaffReviewView(self.bot, submission_id, self.queue_choice)
             )
             thread = await msg.create_thread(name=f"Auction #{submission_id} – {self.card_embed.title or 'Card'}")
 
-            # Save message/thread refs
+            # Sauvegarde DB
             async with core.pg_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE submissions SET queue_message_id=$1, queue_channel_id=$2, queue_thread_id=$3 WHERE id=$4",
                     msg.id, channel.id, thread.id, submission_id
                 )
 
-            await interaction.response.send_message("✅ Submission sent.", ephemeral=True)
+            await interaction.followup.send("✅ Submission sent successfully!", ephemeral=True)
             self.stop()
 
     class CurrencyModal(discord.ui.Modal, title="Set Currency"):
@@ -137,11 +141,16 @@ class AuctionsSubmit(commands.Cog):
             self.parent_view = parent_view
 
         async def on_submit(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
             self.parent_view.currency = self.currency.value
             for child in self.parent_view.children:
                 if isinstance(child, discord.ui.Button) and child.label.startswith("Set Currency"):
                     child.label = f"Currency: {self.currency.value}"
-            await interaction.response.edit_message(view=self.parent_view)
+            await interaction.followup.send(f"💰 Currency set to **{self.currency.value}**", ephemeral=True)
+            try:
+                await interaction.message.edit(view=self.parent_view)
+            except:
+                pass
 
     class RateModal(discord.ui.Modal, title="Set Auction Rate"):
         rate = discord.ui.TextInput(label="Rate (e.g. 175:1)", required=True)
@@ -151,11 +160,16 @@ class AuctionsSubmit(commands.Cog):
             self.parent_view = parent_view
 
         async def on_submit(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
             self.parent_view.rate = self.rate.value
             for child in self.parent_view.children:
                 if isinstance(child, discord.ui.Button) and child.label.startswith("Set Rate"):
                     child.label = f"Rate: {self.rate.value}"
-            await interaction.response.edit_message(view=self.parent_view)
+            await interaction.followup.send(f"📊 Rate set to **{self.rate.value}**", ephemeral=True)
+            try:
+                await interaction.message.edit(view=self.parent_view)
+            except:
+                pass
 
 
 async def setup(bot: commands.Bot):
