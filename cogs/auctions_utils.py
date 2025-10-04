@@ -1,7 +1,42 @@
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
-# Rarity → channel mapping
+def strip_discord_emojis(text: str) -> str:
+    """Supprime les emojis Discord custom d'un texte."""
+    return re.sub(r"<a?:\w+:\d+>", "", text)
+
+def extract_first_emoji_id(description: str) -> int | None:
+    """Extrait l'ID du premier emoji custom trouvé dans une description."""
+    match = re.search(r"<a?:\w+:(\d+)>", description or "")
+    return int(match.group(1)) if match else None
+
+def next_daily_release(now: datetime) -> datetime:
+    """
+    Calcule la prochaine heure de release quotidienne (21h57 UTC).
+    Retourne toujours un datetime aware en UTC.
+    """
+    release_time = time(21, 57, tzinfo=timezone.utc)
+    release_at = datetime.combine(now.date(), release_time)
+
+    if release_at.tzinfo is None:
+        release_at = release_at.replace(tzinfo=timezone.utc)
+
+    if release_at <= now:
+        release_at += timedelta(days=1)
+
+    return release_at
+
+def is_after_cutoff(now: datetime) -> bool:
+    """
+    Vérifie si l'heure actuelle est après le cutoff (17h30 UTC).
+    Retourne True si on est après 17h30 UTC, sinon False.
+    """
+    cutoff = time(17, 30, tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now.time() >= cutoff
+
+# --- Constantes de mapping ---
 RARITY_CHANNELS = {
     1342202221558763571: 1304507540645740666,  # Common
     1342202219574857788: 1304507516423766098,  # Rare
@@ -10,26 +45,4 @@ RARITY_CHANNELS = {
     1342202203515125801: 1304052056109350922,  # UR
 }
 
-# Card Maker Queue target channel
-CARDMAKER_CHANNEL_ID = 1395405043431116871
-
-# Release schedule (UTC)
-RELEASE_HOUR_UTC = 21
-RELEASE_MINUTE_UTC = 57
-
-EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
-
-def strip_discord_emojis(text: str) -> str:
-    return EMOJI_RE.sub("", text).strip()
-
-def extract_first_emoji_id(text: str | None) -> int | None:
-    if not text:
-        return None
-    m = re.search(r"<a?:\w+:(\d+)>", text)
-    return int(m.group(1)) if m else None
-
-def next_daily_release(now_utc: datetime) -> datetime:
-    target = now_utc.replace(hour=RELEASE_HOUR_UTC, minute=RELEASE_MINUTE_UTC, second=0, microsecond=0)
-    if target <= now_utc:
-        target += timedelta(days=1)
-    return target
+CARDMAKER_CHANNEL_ID = 1395405043431116871  # <-- remplace par l'ID réel de ton forum CardMaker
