@@ -64,7 +64,7 @@ class Auctions(commands.Cog):
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
         self.pg_pool = await asyncpg.create_pool(**POSTGRES_DSN)
 
-        # Ensure schema (fresh, aligned to code)
+        # Ensure schema
         async with self.pg_pool.acquire() as conn:
             await conn.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
@@ -202,7 +202,7 @@ class Auctions(commands.Cog):
                         "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
                         "VALUES($1,$2::jsonb,$3,$4,$5,'submitted') RETURNING id",
                         self.user.id,
-                        json.dumps(self.card_embed.to_dict()),  # JSONB
+                        json.dumps(self.card_embed.to_dict()),  # JSON encodé pour JSONB
                         self.currency,
                         self.rate,
                         self.queue_choice
@@ -296,6 +296,19 @@ class Auctions(commands.Cog):
             self.submission_id = submission_id
             self.queue_choice = queue_choice
 
+        async def update_embed(self, interaction: discord.Interaction, extra_text: str,
+                               color: discord.Color = None, remove_view: bool = False):
+            if not interaction.message.embeds:
+                return
+            embed = interaction.message.embeds[0].copy()
+            desc = embed.description or ""
+            # Ajoute la ligne sous "Owned by" (append à la description)
+            desc += f"\n{extra_text}"
+            embed.description = desc
+            if color:
+                embed.color = color
+            await interaction.message.edit(embed=embed, view=None if remove_view else self)
+
         @discord.ui.button(label="Fees Paid", style=discord.ButtonStyle.green)
         async def fees_paid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not self.submission_id:
@@ -303,10 +316,10 @@ class Auctions(commands.Cog):
             try:
                 async with self.cog.pg_pool.acquire() as conn:
                     await conn.execute("UPDATE submissions SET fees_paid = TRUE WHERE id=$1", self.submission_id)
-                await interaction.response.send_message("✅ Fees marked as paid", ephemeral=True)
             except Exception as e:
                 print("❗ Error updating fees:", e)
-                await interaction.response.send_message("❌ Failed to update fees.", ephemeral=True)
+            await self.update_embed(interaction, "Fee paid 💵")
+            await interaction.response.send_message("✅ Fees marked as paid", ephemeral=True)
 
         @discord.ui.button(label="Fees Not Paid", style=discord.ButtonStyle.red)
         async def fees_not_paid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -315,10 +328,10 @@ class Auctions(commands.Cog):
             try:
                 async with self.cog.pg_pool.acquire() as conn:
                     await conn.execute("UPDATE submissions SET fees_paid = FALSE WHERE id=$1", self.submission_id)
-                await interaction.response.send_message("❌ Fees marked as not paid", ephemeral=True)
             except Exception as e:
                 print("❗ Error updating fees:", e)
-                await interaction.response.send_message("❌ Failed to update fees.", ephemeral=True)
+            await self.update_embed(interaction, "❌ Fees not paid")
+            await interaction.response.send_message("❌ Fees marked as not paid", ephemeral=True)
 
         @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
         async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -326,7 +339,13 @@ class Auctions(commands.Cog):
                 return await interaction.response.send_message("❌ Submission not found.", ephemeral=True)
             try:
                 batch_id = await self.cog.add_to_batch(self.submission_id, self.queue_choice)
-                await interaction.response.send_message(f"✅ Card accepted (Batch {batch_id})", ephemeral=True)
+                await self.update_embed(
+                    interaction,
+                    f"✅ Card accepted (Batch {batch_id})",
+                    color=discord.Color.green(),
+                    remove_view=True
+                )
+                await interaction.response.send_message(f"Card added to Batch {batch_id}", ephemeral=False)
             except Exception as e:
                 print("❗ Error accepting card:", e)
                 await interaction.response.send_message("❌ Failed to accept card.", ephemeral=True)
@@ -338,15 +357,19 @@ class Auctions(commands.Cog):
             try:
                 async with self.cog.pg_pool.acquire() as conn:
                     await conn.execute("UPDATE submissions SET status='denied' WHERE id=$1", self.submission_id)
-                await interaction.response.send_message("❌ Card denied", ephemeral=True)
+                await self.update_embed(
+                    interaction,
+                    "❌ Card denied",
+                    color=discord.Color.red(),
+                    remove_view=True
+                )
+                await interaction.response.send_message("Card denied", ephemeral=False)
             except Exception as e:
                 print("❗ Error denying card:", e)
                 await interaction.response.send_message("❌ Failed to deny card.", ephemeral=True)
 
         @discord.ui.button(label="Deny with reason", style=discord.ButtonStyle.gray)
         async def deny_reason_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-            if not self.submission_id:
-                return await interaction.response.send_message("❌ Submission not found.", ephemeral=True)
             await interaction.response.send_modal(self.cog.DenyReasonModal(self.cog, self.submission_id))
 
     class DenyReasonModal(discord.ui.Modal, title="Deny with reason"):
@@ -358,25 +381,33 @@ class Auctions(commands.Cog):
             self.submission_id = submission_id
 
         async def on_submit(self, interaction: discord.Interaction):
+            if not interaction.message.embeds:
+                return
             try:
                 async with self.cog.pg_pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE submissions SET status='denied', deny_reason=$1 WHERE id=$2",
                         self.reason.value, self.submission_id
                     )
-                await interaction.response.send_message("❌ Card denied with reason saved.", ephemeral=True)
             except Exception as e:
-                print("❗ Error denying with reason:", e)
-                await interaction.response.send_message("❌ Failed to deny card.", ephemeral=True)
+                print("❗ Error saving deny reason:", e)
+
+            embed = interaction.message.embeds[0].copy()
+            desc = embed.description or ""
+            desc += f"\n❌ Card denied\nReason: {self.reason.value}"
+            embed.description = desc
+            embed.color = discord.Color.red()
+            await interaction.message.edit(embed=embed, view=None)
+            await interaction.response.send_message("Card denied with reason", ephemeral=False)
 
     # --- Batch management ---
     async def add_to_batch(self, submission_id: int, queue_choice: str) -> int:
         """
         Assigns the submission to a batch.
         - Normal Queue: max 15 cards per batch, create new when full.
-        - Skip Queue: no limit.
-        - Card Maker Queue: no limit.
-        Returns the batch_id used.
+        - Skip Queue: no limit (batch 1).
+        - Card Maker Queue: no limit (batch 1).
+        Returns the batch_id used and sets status='accepted'.
         """
         async with self.pg_pool.acquire() as conn:
             if queue_choice == "normal":
@@ -425,8 +456,8 @@ class Auctions(commands.Cog):
         if card_dict:
             try:
                 card_embed = discord.Embed.from_dict(card_dict)
-                embed.description = card_embed.title or ""
-                if card_embed.image:
+                embed.description = card_embed.description or card_embed.title or ""
+                if card_embed.image and getattr(card_embed.image, "url", None):
                     embed.set_image(url=card_embed.image.url)
             except Exception:
                 pass
@@ -474,8 +505,8 @@ class Auctions(commands.Cog):
                         if card_dict:
                             try:
                                 card_embed = discord.Embed.from_dict(card_dict)
-                                embed.description = card_embed.title or ""
-                                if card_embed.image:
+                                embed.description = card_embed.description or card_embed.title or ""
+                                if card_embed.image and getattr(card_embed.image, "url", None):
                                     embed.set_image(url=card_embed.image.url)
                             except Exception:
                                 pass
