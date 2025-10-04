@@ -85,6 +85,7 @@ class Auctions(commands.Cog):
 
     # --- Slash command: auction-submit ---
     @app_commands.command(name="auction-submit", description="Submit your Mazoku card for auction")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_submit(self, interaction: discord.Interaction):
         data = await self.redis.get(f"mazoku:{interaction.user.id}:card")
         if not data:
@@ -140,6 +141,7 @@ class Auctions(commands.Cog):
 
     # --- Staff review ---
     @app_commands.command(name="auction-review", description="Review a submission")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_review(self, interaction: discord.Interaction, submission_id: int):
         async with self.pg_pool.acquire() as conn:
             row = await conn.fetchrow("SELECT * FROM submissions WHERE id=$1", submission_id)
