@@ -88,50 +88,56 @@ class AuctionsSubmit(commands.Cog):
             if core is None or core.pg_pool is None:
                 return await interaction.response.send_message("❌ Core not ready.", ephemeral=True)
 
-            # ✅ Réponse immédiate
-            await interaction.response.defer(ephemeral=True)
+            try:
+                # ✅ Réponse immédiate
+                await interaction.response.defer(ephemeral=True)
 
-            # Insertion DB
-            async with core.pg_pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
-                    "VALUES($1,$2::jsonb,$3,$4,$5,'submitted') RETURNING id",
-                    self.user.id,
-                    json.dumps(self.card_embed.to_dict()),
-                    self.currency,
-                    self.rate,
-                    self.queue_choice
+                # Insertion DB
+                async with core.pg_pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
+                        "VALUES($1,$2::jsonb,$3,$4,$5,'submitted') RETURNING id",
+                        self.user.id,
+                        json.dumps(self.card_embed.to_dict()),
+                        self.currency,
+                        self.rate,
+                        self.queue_choice
+                    )
+                    submission_id = row["id"]
+
+                # Déterminer le salon cible
+                if self.queue_choice == "cardmaker":
+                    channel_id = CARDMAKER_CHANNEL_ID
+                else:
+                    rarity_id = extract_first_emoji_id(self.card_embed.description)
+                    channel_id = RARITY_CHANNELS.get(rarity_id)
+
+                channel = self.bot.get_channel(channel_id) if channel_id else None
+                if not channel:
+                    return await interaction.followup.send("❌ Target channel not found.", ephemeral=True)
+
+                # Poster et créer un thread
+                from .auctions_staff import StaffReviewView
+                msg = await channel.send(
+                    embed=self.card_embed,
+                    view=StaffReviewView(self.bot, submission_id, self.queue_choice)
                 )
-                submission_id = row["id"]
+                thread = await msg.create_thread(name=f"Auction #{submission_id} – {self.card_embed.title or 'Card'}")
 
-            # Déterminer le salon cible
-            if self.queue_choice == "cardmaker":
-                channel_id = CARDMAKER_CHANNEL_ID
-            else:
-                rarity_id = extract_first_emoji_id(self.card_embed.description)
-                channel_id = RARITY_CHANNELS.get(rarity_id)
+                # Sauvegarde DB
+                async with core.pg_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE submissions SET queue_message_id=$1, queue_channel_id=$2, queue_thread_id=$3 WHERE id=$4",
+                        msg.id, channel.id, thread.id, submission_id
+                    )
 
-            channel = self.bot.get_channel(channel_id) if channel_id else None
-            if not channel:
-                return await interaction.followup.send("❌ Target channel not found (rarity unknown).", ephemeral=True)
+                await interaction.followup.send("✅ Submission sent successfully!", ephemeral=True)
+                self.stop()
 
-            # Poster et créer un thread
-            from .auctions_staff import StaffReviewView
-            msg = await channel.send(
-                embed=self.card_embed,
-                view=StaffReviewView(self.bot, submission_id, self.queue_choice)
-            )
-            thread = await msg.create_thread(name=f"Auction #{submission_id} – {self.card_embed.title or 'Card'}")
-
-            # Sauvegarde DB
-            async with core.pg_pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE submissions SET queue_message_id=$1, queue_channel_id=$2, queue_thread_id=$3 WHERE id=$4",
-                    msg.id, channel.id, thread.id, submission_id
-                )
-
-            await interaction.followup.send("✅ Submission sent successfully!", ephemeral=True)
-            self.stop()
+            except Exception as e:
+                print("❌ Error in Submit Auction:", e)
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
 
     class CurrencyModal(discord.ui.Modal, title="Set Currency"):
         currency = discord.ui.TextInput(label="Currency", required=True)
@@ -141,16 +147,21 @@ class AuctionsSubmit(commands.Cog):
             self.parent_view = parent_view
 
         async def on_submit(self, interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            self.parent_view.currency = self.currency.value
-            for child in self.parent_view.children:
-                if isinstance(child, discord.ui.Button) and child.label.startswith("Set Currency"):
-                    child.label = f"Currency: {self.currency.value}"
-            await interaction.followup.send(f"💰 Currency set to **{self.currency.value}**", ephemeral=True)
             try:
-                await interaction.message.edit(view=self.parent_view)
-            except:
-                pass
+                await interaction.response.defer(ephemeral=True)
+                self.parent_view.currency = self.currency.value
+                for child in self.parent_view.children:
+                    if isinstance(child, discord.ui.Button) and child.label.startswith("Set Currency"):
+                        child.label = f"Currency: {self.currency.value}"
+                await interaction.followup.send(f"💰 Currency set to **{self.currency.value}**", ephemeral=True)
+                try:
+                    await interaction.message.edit(view=self.parent_view)
+                except:
+                    pass
+            except Exception as e:
+                print("❌ Error in CurrencyModal:", e)
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ Error setting currency.", ephemeral=True)
 
     class RateModal(discord.ui.Modal, title="Set Auction Rate"):
         rate = discord.ui.TextInput(label="Rate (e.g. 175:1)", required=True)
@@ -160,16 +171,21 @@ class AuctionsSubmit(commands.Cog):
             self.parent_view = parent_view
 
         async def on_submit(self, interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            self.parent_view.rate = self.rate.value
-            for child in self.parent_view.children:
-                if isinstance(child, discord.ui.Button) and child.label.startswith("Set Rate"):
-                    child.label = f"Rate: {self.rate.value}"
-            await interaction.followup.send(f"📊 Rate set to **{self.rate.value}**", ephemeral=True)
             try:
-                await interaction.message.edit(view=self.parent_view)
-            except:
-                pass
+                await interaction.response.defer(ephemeral=True)
+                self.parent_view.rate = self.rate.value
+                for child in self.parent_view.children:
+                    if isinstance(child, discord.ui.Button) and child.label.startswith("Set Rate"):
+                        child.label = f"Rate: {self.rate.value}"
+                await interaction.followup.send(f"📊 Rate set to **{self.rate.value}**", ephemeral=True)
+                try:
+                    await interaction.message.edit(view=self.parent_view)
+                except:
+                    pass
+            except Exception as e:
+                print("❌ Error in RateModal:", e)
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ Error setting rate.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
