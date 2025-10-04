@@ -5,29 +5,28 @@ import logging
 import discord
 from discord.ext import commands
 
-# Active les logs (utile pour debug)
 logging.basicConfig(level=logging.INFO)
 
-# Récupère le token depuis les variables d'environnement
 TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise RuntimeError("❌ DISCORD_TOKEN non défini dans les variables d'environnement.")
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 
-# Définition des intents
 intents = discord.Intents.default()
-intents.members = True  # nécessaire si tu veux accéder aux membres
-intents.message_content = True  # utile si tu veux lire le contenu des messages
+intents.members = True          # requis pour guild.get_member, on_member_join
+intents.message_content = True  # requis si tu veux lire le contenu des messages
 
-# Création du bot
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Quand le bot est prêt
 @bot.event
 async def on_ready():
     logging.info(f"✅ Connecté en tant que {bot.user} (ID: {bot.user.id})")
+    try:
+        # Synchronisation des slash commands uniquement sur ton serveur
+        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+        logging.info(f"📦 {len(synced)} commandes slash synchronisées avec le serveur {GUILD_ID}.")
+    except Exception as e:
+        logging.error(f"❌ Erreur de synchronisation des commandes: {e}")
     logging.info("------")
 
-# Charger le cog auctions
 async def load_cogs():
     await bot.load_extension("cogs.auctions")
 
