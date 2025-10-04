@@ -65,7 +65,7 @@ class Auctions(commands.Cog):
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
         self.pg_pool = await asyncpg.create_pool(**POSTGRES_DSN)
 
-        # Create table if not exists, then ensure all columns exist
+        # Ensure schema (safe migrations)
         async with self.pg_pool.acquire() as conn:
             await conn.execute("""
             CREATE TABLE IF NOT EXISTS submissions (
@@ -94,7 +94,7 @@ class Auctions(commands.Cog):
             await self.pg_pool.close()
         self.check_auctions.cancel()
 
-    # --- Detect Mazoku messages ---
+    # --- Detect Mazoku messages (new + edits) ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if (
@@ -119,6 +119,8 @@ class Auctions(commands.Cog):
         embed = message.embeds[0]
         data = embed.to_dict()
         desc = data.get("description", "") or ""
+
+        # Extract owner ID from "Owned by <@ID>" in description
         if "Owned by <@" in desc:
             try:
                 start = desc.find("Owned by <@") + len("Owned by <@")
@@ -127,12 +129,12 @@ class Auctions(commands.Cog):
                 await self.redis.set(
                     f"mazoku:card:{owner_id}",
                     json.dumps(data),
-                    ex=600
+                    ex=600  # 10 minutes TTL
                 )
             except Exception as e:
                 print("❗ Error parsing owner_id:", e)
 
-    # --- Slash command: auction-submit ---
+    # --- Slash command: auction-submit (guild-only) ---
     @app_commands.command(name="auction-submit", description="Submit your Mazoku card for auction")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_submit(self, interaction: discord.Interaction):
@@ -142,17 +144,23 @@ class Auctions(commands.Cog):
                 "❌ No Mazoku card detected. Use `/inventory` with Mazoku first.",
                 ephemeral=True
             )
+
+        # Build embed from stored Mazoku card and clean title
         card_embed = discord.Embed.from_dict(json.loads(data))
         if card_embed.title:
             card_embed.title = strip_discord_emojis(card_embed.title)
 
+        # DM form
         dm = await interaction.user.create_dm()
         await dm.send(
             "Here is your submitted card",
             embed=card_embed,
             view=self.AuctionSetupView(self, interaction.user, card_embed)
         )
-        await interaction.response.send_message("📩 Check your DMs to finish your auction submission.", ephemeral=True)
+        await interaction.response.send_message(
+            "📩 Check your DMs to finish your auction submission.",
+            ephemeral=True
+        )
 
     # --- DM Form ---
     class AuctionSetupView(discord.ui.View):
@@ -165,6 +173,7 @@ class Auctions(commands.Cog):
             self.rate = None
             self.queue_choice = None
 
+        # Dropdown for queue selection
         @discord.ui.select(
             placeholder="Choose a queue",
             options=[
@@ -173,55 +182,66 @@ class Auctions(commands.Cog):
                 discord.SelectOption(label="Skip Queue", value="skip"),
             ]
         )
-        async def select_queue(self, interaction, select):
+        async def select_queue(self, interaction: discord.Interaction, select: discord.ui.Select):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             self.queue_choice = select.values[0]
+            # Keep message, update view so selection persists
             await interaction.response.edit_message(view=self)
 
+        # Set Currency → modal to type currency
         @discord.ui.button(label="Set Currency", style=discord.ButtonStyle.blurple)
-        async def set_currency(self, interaction, button):
+        async def set_currency(self, interaction: discord.Interaction, button: discord.ui.Button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             await interaction.response.send_modal(self.cog.CurrencyModal(self))
 
+        # Set Rate → modal (text input)
         @discord.ui.button(label="Set Rate", style=discord.ButtonStyle.gray)
-        async def set_rate(self, interaction, button):
+        async def set_rate(self, interaction: discord.Interaction, button: discord.ui.Button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
             await interaction.response.send_modal(self.cog.RateModal(self))
 
+        # Submit Auction → sends embed to selected queue channel and records submission
         @discord.ui.button(label="Submit Auction", style=discord.ButtonStyle.green)
-        async def submit(self, interaction, button):
+        async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
             if interaction.user != self.user:
                 return await interaction.response.send_message("Not your form.", ephemeral=True)
-            if not self.queue_choice or not self.currency or not self.rate:
-                return await interaction.response.send_message("❌ Please fill all fields.", ephemeral=True)
 
-            # Insert into DB and get submission_id
-            submission_id = None
+            # Validate required fields
+            if not self.queue_choice:
+                return await interaction.response.send_message("❌ Please select a queue first.", ephemeral=True)
+            if not self.currency or not self.rate:
+                return await interaction.response.send_message(
+                    "❌ Please set both currency and rate before submitting.",
+                    ephemeral=True
+                )
+
+            # Persist submission in DB and get submission_id
             try:
                 async with self.cog.pg_pool.acquire() as conn:
                     row = await conn.fetchrow(
                         "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
-                        "VALUES($1,$2,$3,$4,$5,'submitted') RETURNING id",
+                        "VALUES($1,$2::jsonb,$3,$4,$5,'submitted') RETURNING id",
                         self.user.id,
-                        self.card_embed.to_dict(),
+                        json.dumps(self.card_embed.to_dict()),
                         self.currency,
                         self.rate,
                         self.queue_choice
                     )
-                    if row:
-                        submission_id = row["id"]
+                    submission_id = row["id"] if row else None
             except Exception as e:
                 print("❗ DB insert error:", e)
+                submission_id = None
 
             if not submission_id:
                 return await interaction.response.send_message(
-                    "❌ Database error: submission not saved.", ephemeral=True
+                    "❌ Database error: submission not saved.",
+                    ephemeral=True
                 )
 
-            # Resolve channel
+            # Resolve channel by queue choice
             if self.queue_choice == "cardmaker":
                 channel_id = QUEUE_CARDMAKER_ID
             elif self.queue_choice == "normal":
@@ -232,7 +252,8 @@ class Auctions(commands.Cog):
             channel = self.cog.bot.get_channel(channel_id) if channel_id else None
             if not channel:
                 return await interaction.response.send_message(
-                    "❌ Queue channel is not configured. Please contact staff.", ephemeral=True
+                    "❌ Queue channel is not configured. Please contact staff.",
+                    ephemeral=True
                 )
 
             # Post the embed to the queue channel with staff controls
@@ -244,10 +265,11 @@ class Auctions(commands.Cog):
             except Exception as e:
                 print("❗ Error sending to queue channel:", e)
                 return await interaction.response.send_message(
-                    "❌ Failed to post in the selected queue.", ephemeral=True
+                    "❌ Failed to post in the selected queue.",
+                    ephemeral=True
                 )
 
-            # Confirmation embed in DM
+            # Confirmation embed in DM (recap like your example)
             confirmation = discord.Embed(
                 title="🎉 Auction Submission Successful 🎉",
                 color=discord.Color.green()
@@ -258,7 +280,10 @@ class Auctions(commands.Cog):
             confirmation.add_field(name="Queue", value=self.queue_choice.capitalize(), inline=True)
             confirmation.set_footer(text="Good luck with your auction! • 🌟 • " + datetime.now().strftime("%d/%m/%Y %H:%M"))
 
+            # Replace the DM message with the confirmation card and remove controls
             await interaction.response.edit_message(content=None, embed=confirmation, view=None)
+
+            # Stop interactions on this View
             self.stop()
 
     # --- Modals ---
@@ -386,6 +411,7 @@ class Auctions(commands.Cog):
         """
         async with self.pg_pool.acquire() as conn:
             if queue_choice == "normal":
+                # Latest batch with accepted status
                 last = await conn.fetchrow(
                     "SELECT batch_id, COUNT(*) AS count FROM submissions "
                     "WHERE queue='normal' AND status='accepted' "
@@ -399,6 +425,7 @@ class Auctions(commands.Cog):
                 else:
                     batch_id = last["batch_id"]
             else:
+                # Unlimited queues: batch_id = 1
                 batch_id = 1
 
             await conn.execute(
@@ -419,9 +446,19 @@ class Auctions(commands.Cog):
         embed = discord.Embed(title=f"Auction Submission #{submission_id}", color=discord.Color.gold())
         embed.add_field(name="User", value=f"<@{row['user_id']}>", inline=True)
 
-        if row["card"]:
+        # card may be JSONB (decoded) or text; normalize
+        card_data = row["card"]
+        try:
+            if isinstance(card_data, str):
+                card_dict = json.loads(card_data)
+            else:
+                card_dict = dict(card_data) if card_data is not None else None
+        except Exception:
+            card_dict = None
+
+        if card_dict:
             try:
-                card_embed = discord.Embed.from_dict(row["card"])
+                card_embed = discord.Embed.from_dict(card_dict)
                 embed.description = card_embed.title or ""
                 if card_embed.image:
                     embed.set_image(url=card_embed.image.url)
@@ -459,14 +496,24 @@ class Auctions(commands.Cog):
                     channel = self.bot.get_channel(AUCTION_CHANNEL_ID)
                     if channel:
                         embed = discord.Embed(title="Auction Started!", color=discord.Color.green())
-                        if row["card"]:
+                        card_data = row["card"]
+                        try:
+                            if isinstance(card_data, str):
+                                card_dict = json.loads(card_data)
+                            else:
+                                card_dict = dict(card_data) if card_data is not None else None
+                        except Exception:
+                            card_dict = None
+
+                        if card_dict:
                             try:
-                                card_embed = discord.Embed.from_dict(row["card"])
+                                card_embed = discord.Embed.from_dict(card_dict)
                                 embed.description = card_embed.title or ""
                                 if card_embed.image:
                                     embed.set_image(url=card_embed.image.url)
                             except Exception:
                                 pass
+
                         await channel.send(embed=embed)
                         await conn.execute(
                             "UPDATE submissions SET status='released' WHERE id=$1",
