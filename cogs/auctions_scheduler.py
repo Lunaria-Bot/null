@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands, tasks
 
-from .auctions_core import AUCTION_CHANNEL_ID
 from .auctions_utils import next_daily_release, RELEASE_HOUR_UTC, RELEASE_MINUTE_UTC
 
 class AuctionsScheduler(commands.Cog):
