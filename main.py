@@ -17,7 +17,6 @@ async def main():
     # Load all cogs
     for ext in [
         "cogs.auctions_core",
-        "cogs.auctions_utils",
         "cogs.auctions_submit",
         "cogs.auctions_staff",
         "cogs.auctions_scheduler",
