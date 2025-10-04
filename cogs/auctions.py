@@ -12,30 +12,38 @@ from discord import app_commands
 import asyncpg
 import redis.asyncio as redis
 
-# --------- Load from environment ---------
-GUILD_ID = int(os.getenv("GUILD_ID"))
+# --------- Environment loading ---------
+def _get_int(name: str, default: Optional[int] = None) -> int:
+    val = os.getenv(name)
+    if val is None:
+        if default is None:
+            raise RuntimeError(f"Missing required environment variable: {name}")
+        return default
+    return int(val)
 
-STAFF_ROLE_ID = int(os.getenv("STAFF_ROLE_ID"))
-STAFF_ALERT_CHANNEL_ID = int(os.getenv("STAFF_ALERT_CHANNEL_ID"))
+GUILD_ID = _get_int("GUILD_ID")
+
+STAFF_ROLE_ID = _get_int("STAFF_ROLE_ID", 0)  # kept for future use, no ping anymore
+STAFF_ALERT_CHANNEL_ID = _get_int("STAFF_ALERT_CHANNEL_ID", 0)
 
 QUEUE_CHANNELS = {
-    "Normal Queue": int(os.getenv("NORMAL_QUEUE_CHANNEL")),
-    "Skip Queue": int(os.getenv("SKIP_QUEUE_CHANNEL")),
-    "Card Maker Queue": int(os.getenv("CARDMAKER_QUEUE_CHANNEL")),
+    "Normal Queue": _get_int("NORMAL_QUEUE_CHANNEL"),
+    "Skip Queue": _get_int("SKIP_QUEUE_CHANNEL"),
+    "Card Maker Queue": _get_int("CARDMAKER_QUEUE_CHANNEL"),
 }
 
 RARITY_CHANNELS = {
-    "Common": int(os.getenv("COMMON_CHANNEL")),
-    "Rare": int(os.getenv("RARE_CHANNEL")),
-    "SR": int(os.getenv("SR_CHANNEL")),
-    "SSR": int(os.getenv("SSR_CHANNEL")),
-    "UR": int(os.getenv("UR_CHANNEL")),
-    "CM": int(os.getenv("CM_CHANNEL")),
+    "Common": _get_int("COMMON_CHANNEL"),
+    "Rare": _get_int("RARE_CHANNEL"),
+    "SR": _get_int("SR_CHANNEL"),
+    "SSR": _get_int("SSR_CHANNEL"),
+    "UR": _get_int("UR_CHANNEL"),
+    "CM": _get_int("CM_CHANNEL"),
 }
 
-FEE_RECIPIENT_ID = int(os.getenv("FEE_RECIPIENT_ID"))
+FEE_RECIPIENT_ID = _get_int("FEE_RECIPIENT_ID")
 
-# Compat PG* (Railway/Heroku) et POSTGRES_* (local)
+# PG* (Railway/Heroku) and POSTGRES_* (local) compatibility
 POSTGRES_DSN = {
     "user": os.getenv("POSTGRES_USER") or os.getenv("PGUSER"),
     "password": os.getenv("POSTGRES_PASSWORD") or os.getenv("PGPASSWORD"),
@@ -54,6 +62,16 @@ class Auctions(commands.Cog):
         self.bot = bot
         self.redis: Optional[redis.Redis] = None
         self.pg_pool: Optional[asyncpg.Pool] = None
+
+        # Human-readable questions used across application/review/post
+        self.questions: List[str] = [
+            "Card details",
+            "Currency preference(s)",
+            "Rate (BS:MS)",
+            "Screenshot",
+            "Free skip used",
+            "Fees confirmation",
+        ]
 
     # ---------- Lifecycle ----------
     async def cog_load(self):
@@ -109,7 +127,9 @@ class Auctions(commands.Cog):
             return "Common"
         return None
 
-    async def _dm_user(self, guild: discord.Guild, user_id: int, message: str):
+    async def _dm_user(self, guild: Optional[discord.Guild], user_id: int, message: str):
+        if not guild:
+            return
         member = guild.get_member(user_id)
         if not member:
             return
@@ -121,18 +141,48 @@ class Auctions(commands.Cog):
 
     def _ensure_list_answers(self, answers: Any) -> List[str]:
         if isinstance(answers, list):
-            return answers
+            return [str(a) if not isinstance(a, str) else a for a in answers]
         if isinstance(answers, str):
             try:
                 parsed = json.loads(answers)
                 if isinstance(parsed, list):
-                    return parsed
+                    return [str(a) if not isinstance(a, str) else a for a in parsed]
                 return [answers]
             except Exception:
                 return [answers]
         return [str(answers)]
 
-    # ---------- Application entry ----------
+    def _apply_answers_to_embed(self, embed: discord.Embed, answers: List[str]):
+        """
+        Add human-readable question labels to the embed and show the screenshot inline if possible.
+        Keeps under Discord's 25-field limit by capping answer fields.
+        """
+        # Reserve 3 fields at top (User/Queue/Status etc.) elsewhere -> keep answers <= 20
+        max_answer_fields = 20
+
+        for i, ans in enumerate(answers[:len(self.questions)]):
+            label = self.questions[i]
+            if i == 3 and ans and str(ans).startswith("http"):
+                # Question 4 is screenshot -> show image
+                try:
+                    embed.set_image(url=str(ans))
+                except Exception:
+                    embed.add_field(name=label, value=(ans or "—"), inline=False)
+            else:
+                embed.add_field(name=label, value=(ans or "—"), inline=False)
+
+            if len(embed.fields) >= max_answer_fields:
+                break
+
+        extra = len(answers) - len(self.questions)
+        if extra > 0:
+            embed.add_field(
+                name="…",
+                value=f"{extra} additional answers not displayed",
+                inline=False
+            )
+
+    # ---------- Application ----------
     @app_commands.command(name="auction", description="Apply for an auction")
     @app_commands.choices(queue=[
         app_commands.Choice(name="Skip Queue", value="Skip Queue"),
@@ -152,9 +202,7 @@ class Auctions(commands.Cog):
             description=(
                 "Are you sure you want to apply?\n\n"
                 "Once you start the application I will send you a series of questions. "
-                "You will have 60 minutes to complete the application. If you do not "
-                "complete the application in time, you will have to restart. If you wish "
-                "to stop the application feel free to click the cancel button at any time."
+                "You will have 60 minutes to complete the application."
             ),
             color=discord.Color.purple()
         )
@@ -191,13 +239,14 @@ class Auctions(commands.Cog):
         guild = self.bot.get_guild(GUILD_ID)
         dm = await user.create_dm()
 
-        questions = [
-            "1/6. Please enter the details of the card. ONE card at a time only. If it’s an event card, please mention the event (e.g. SR Emilia V1 Halloween/SR Emilia V1 Christmas).",
-            "2/6. Please insert your currency preference(s). (example: Bloodstones / Moonstones)",
-            "3/6. If accepting Bloodstones and Moonstones, please enter your Bloodstones to Moonstones rate. (example: 275:1)",
-            "4/6. Please add the screenshot of the card. Make sure the version number is clearly seen.",
-            "5/6. If you're a server booster or clan member, are you using your free queue skip? (Boosters and clan members can use a free queue skip once every 2 weeks, just say no if you're not)",
-            f"6/6. Send the auction fees to <@{FEE_RECIPIENT_ID}> by using the Mazoku command, /trade create.\nType 'sent' once done."
+        # Ask using the human-readable labels
+        questions_text = [
+            "1/6. Card details",
+            "2/6. Currency preference(s)",
+            "3/6. Rate (BS:MS)",
+            "4/6. Screenshot (URL or attach an image)",
+            "5/6. Free skip used",
+            f"6/6. Fees confirmation (send fees to <@{FEE_RECIPIENT_ID}> then type 'sent')",
         ]
 
         answers: List[str] = []
@@ -205,7 +254,7 @@ class Auctions(commands.Cog):
         def check(m: discord.Message):
             return m.author.id == user.id and m.channel.id == dm.id
 
-        for q in questions:
+        for q in questions_text:
             await dm.send(embed=discord.Embed(title="Lilac Auction Submission", description=q, color=discord.Color.purple()))
             try:
                 msg = await self.bot.wait_for("message", check=check, timeout=3600)
@@ -235,10 +284,10 @@ class Auctions(commands.Cog):
 
         await dm.send(f"✅ Your application has been submitted successfully! (ID: {submission_id})")
 
-        # ---------- Post summary in queue channel + ping staff ----------
-        queue_channel_id = QUEUE_CHANNELS.get(queue)
-        if queue_channel_id and guild:
-            channel = guild.get_channel(queue_channel_id)
+        # Post summary in queue channel (no staff ping anymore)
+        if guild:
+            queue_channel_id = QUEUE_CHANNELS.get(queue)
+            channel = guild.get_channel(queue_channel_id) if queue_channel_id else None
             if channel:
                 embed = discord.Embed(
                     title=f"Lilac Auction Submission #{submission_id}",
@@ -247,20 +296,17 @@ class Auctions(commands.Cog):
                 )
                 embed.add_field(name="Queue", value=queue, inline=True)
                 embed.add_field(name="Submitted by", value=user.mention, inline=True)
-                # Ajoute jusqu'à 20 Qx pour rester sous la limite
-                for i, ans in enumerate(answers[:20], start=1):
-                    embed.add_field(name=f"Q{i}", value=(ans or "—"), inline=False)
-                if len(answers) > 20:
-                    embed.add_field(name="…", value=f"{len(answers) - 20} more answers not shown", inline=False)
+                # Show answers using readable labels, include image
+                self._apply_answers_to_embed(embed, answers)
                 await channel.send(embed=embed)
 
-        if guild:
-            staff_role = guild.get_role(STAFF_ROLE_ID)
+        # Inform staff channel (no role mention)
+        if guild and STAFF_ALERT_CHANNEL_ID:
             alert_channel = guild.get_channel(STAFF_ALERT_CHANNEL_ID)
-            if staff_role and alert_channel:
-                await alert_channel.send(f"📢 {staff_role.mention} New submission #{submission_id} in {queue}. Use `/auction-review {submission_id}` to review.")
+            if alert_channel:
+                await alert_channel.send(f"New auction submission #{submission_id} in {queue}. Use `/auction-review {submission_id}` to review.")
 
-    # ---------- Review command ----------
+    # ---------- Review ----------
     @app_commands.command(name="auction-review", description="Review a specific auction submission")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
     async def auction_review(self, interaction: discord.Interaction, submission_id: int):
@@ -284,18 +330,30 @@ class Auctions(commands.Cog):
         embed.add_field(name="Queue", value=queue, inline=True)
         embed.add_field(name="Status", value=status, inline=True)
 
-        # Limite à 20 champs pour rester < 25 au total
-        for i, ans in enumerate(answers[:20], start=1):
-            embed.add_field(name=f"Q{i}", value=(ans or "—"), inline=False)
-        if len(answers) > 20:
-            embed.add_field(
-                name="…",
-                value=f"{len(answers) - 20} additional answers not displayed",
-                inline=False
-            )
+        # Add readable Q labels and image inline
+        self._apply_answers_to_embed(embed, answers)
 
         view = self.ReviewView(self, submission_id, user_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    class DenyReasonModal(discord.ui.Modal, title="Deny Submission"):
+        reason = discord.ui.TextInput(label="Reason", style=discord.TextStyle.paragraph, required=True)
+
+        def __init__(self, cog: "Auctions", submission_id: int, user_id: int):
+            super().__init__()
+            self.cog = cog
+            self.submission_id = submission_id
+            self.user_id = user_id
+
+        async def on_submit(self, interaction: discord.Interaction):
+            async with self.cog.pg_pool.acquire() as conn:
+                await conn.execute("UPDATE submissions SET status='denied' WHERE id=$1", self.submission_id)
+            await interaction.response.send_message(
+                f"❌ Submission #{self.submission_id} denied.\nReason: {self.reason.value}",
+                ephemeral=True
+            )
+            await self.cog._dm_user(interaction.guild, self.user_id,
+                                    f"❌ Your auction submission (ID: {self.submission_id}) was denied.\nReason: {self.reason.value}")
 
     class ReviewView(discord.ui.View):
         def __init__(self, cog: "Auctions", submission_id: int, user_id: int):
@@ -308,15 +366,27 @@ class Auctions(commands.Cog):
         async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
             async with self.cog.pg_pool.acquire() as conn:
                 await conn.execute("UPDATE submissions SET status='approved' WHERE id=$1", self.submission_id)
-            await interaction.response.send_message(f"✅ Approved submission #{self.submission_id}. Assign it to a batch with `/batch-build` or `/batch-assign`.", ephemeral=True)
-            await self.cog._dm_user(interaction.guild, self.user_id, f"✅ Your auction submission (ID: {self.submission_id}) has been approved.")
+            await interaction.response.send_message(
+                f"✅ Approved submission #{self.submission_id}. Assign it to a batch with `/batch-build` or `/batch-assign`.",
+                ephemeral=True
+            )
+            await self.cog._dm_user(interaction.guild, self.user_id,
+                                    f"✅ Your auction submission (ID: {self.submission_id}) has been approved.")
 
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        @discord.ui.button(label="Deny", style=discord.ButtonStyle.gray)
         async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # Keep simple deny without reason if needed
             async with self.cog.pg_pool.acquire() as conn:
                 await conn.execute("UPDATE submissions SET status='denied' WHERE id=$1", self.submission_id)
-            await interaction.response.send_message(f"❌ Denied submission #{self.submission_id}.", ephemeral=True)
-            await self.cog._dm_user(interaction.guild, self.user_id, f"❌ Your auction submission (ID: {self.submission_id}) has been declined.")
+            await interaction.response.send_message(f"❌ Submission #{self.submission_id} denied.", ephemeral=True)
+            await self.cog._dm_user(interaction.guild, self.user_id,
+                                    f"❌ Your auction submission (ID: {self.submission_id}) has been declined.")
+
+        @discord.ui.button(label="Deny with reason", style=discord.ButtonStyle.red)
+        async def deny_with_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.send_modal(
+                Auctions.DenyReasonModal(self.cog, self.submission_id, self.user_id)
+            )
 
     # ---------- Batch building ----------
     @app_commands.command(name="batch-build", description="Build batches from approved submissions")
@@ -408,30 +478,22 @@ class Auctions(commands.Cog):
                 continue
 
             seller = guild.get_member(user_id) if guild else None
-            desc_lines = [
-                f"• Card details: {answers[0] if len(answers) > 0 else '—'}",
-                f"• Currency preference(s): {answers[1] if len(answers) > 1 else '—'}",
-                f"• Rate (BS:MS): {answers[2] if len(answers) > 2 else '—'}",
-                f"• Screenshot: {answers[3] if len(answers) > 3 else '—'}",
-                f"• Free skip used: {answers[4] if len(answers) > 4 else '—'}",
-                f"• Fees: {answers[5] if len(answers) > 5 else '—'}",
-            ]
+
             embed = discord.Embed(
                 title=f"Auction: {rarity}",
-                description="\n".join(desc_lines),
                 color=discord.Color.green(),
                 timestamp=datetime.now(timezone.utc)
             )
-            if answers and len(answers) > 3 and str(answers[3]).startswith("http"):
-                embed.set_image(url=str(answers[3]))
+            # Show readable answers and inline image
+            self._apply_answers_to_embed(embed, answers)
             embed.add_field(name="Seller", value=(seller.mention if seller else f"<@{user_id}>"), inline=True)
             embed.add_field(name="Queue", value=queue, inline=True)
 
-            # Sécurité: ne jamais dépasser 25 champs
-            if len(embed.fields) > 20:
-                # En cas d'ajout imprévu, on résume
+            # Safety: stay well under 25 fields
+            if len(embed.fields) > 23:
+                # Compact fallback (should rarely happen)
                 embed.clear_fields()
-                embed.add_field(name="Info", value="Too many fields, compact summary shown.", inline=False)
+                # Keep only essential info
                 embed.add_field(name="Seller", value=(seller.mention if seller else f"<@{user_id}>"), inline=True)
                 embed.add_field(name="Queue", value=queue, inline=True)
 
