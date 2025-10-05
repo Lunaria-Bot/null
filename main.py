@@ -1,42 +1,55 @@
-import os
+# main.py
 import asyncio
+import logging
+import asyncpg
+import aioredis
 import discord
 from discord.ext import commands
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = 1293611593845706793  # <-- remplace par l'ID de ton serveur
+from config.settings import BOT_TOKEN, PG_DSN, REDIS_URL
+from cogs.auction_core import AuctionCore
+from cogs.submit import Submit
+from cogs.staff_review import StaffReview
+from cogs.batch_preparation import BatchPreparation
+from cogs.scheduler import Scheduler
+from cogs.utils import Utils
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+logging.basicConfig(level=logging.INFO)
 
-@bot.event
-async def on_ready():
-    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
-    print("------")
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
 
-    try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"✅ {len(synced)} commandes slash synchronisées pour {GUILD_ID}")
-    except Exception as e:
-        print(f"❌ Erreur de sync: {e}")
+class AuctionBot(commands.Bot):
+    def __init__(self, **kwargs):
+        super().__init__(command_prefix="!", intents=intents, **kwargs)
+        self.pg = None
+        self.redis = None
 
-async def main():
-    # Load all cogs
-    for ext in [
-        "cogs.auctions_core",
-        "cogs.auctions_submit",
-        "cogs.auctions_staff",
-        "cogs.auctions_scheduler",
-    ]:
-        try:
-            await bot.load_extension(ext)
-            print(f"Loaded {ext}")
-        except Exception as e:
-            print(f"Failed to load {ext}: {e}")
+    async def setup_hook(self):
+        # DB connections
+        self.pg = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
+        self.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
 
-    # Start the bot
-    await bot.start(TOKEN)
+        # Load cogs
+        await self.add_cog(Utils(self))
+        await self.add_cog(AuctionCore(self))
+        await self.add_cog(Submit(self))
+        await self.add_cog(StaffReview(self))
+        await self.add_cog(BatchPreparation(self))
+        await self.add_cog(Scheduler(self))
+
+        # Sync slash commands
+        await self.tree.sync()
+
+    async def close(self):
+        await super().close()
+        if self.pg:
+            await self.pg.close()
+        if self.redis:
+            await self.redis.close()
+
+bot = AuctionBot()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    bot.run(BOT_TOKEN)
