@@ -5,12 +5,12 @@ from discord.ext import commands
 import asyncpg
 import redis.asyncio as aioredis
 
-from cogs.auction_core import init_db  # pour créer les tables au démarrage
+from cogs.auction_core import init_db  # DB bootstrap
 
 logging.basicConfig(level=logging.INFO)
 
 INTENTS = discord.Intents.default()
-INTENTS.message_content = True  # Nécessaire pour la capture Mazoku
+INTENTS.message_content = True  # required for Mazoku message capture
 
 class AuctionBot(commands.Bot):
     def __init__(self):
@@ -18,7 +18,7 @@ class AuctionBot(commands.Bot):
         self.pg = None
         self.redis = None
         self.guild_id = int(os.getenv("GUILD_ID"))
-        # IDs (depuis les variables d'environnement)
+        # IDs from environment variables
         self.mazoku_bot_id = int(os.getenv("MAZOKU_BOT_ID"))
         self.mazoku_channel_id = int(os.getenv("MAZOKU_CHANNEL_ID"))
         self.ping_channel_id = int(os.getenv("PING_CHANNEL_ID"))
@@ -33,7 +33,7 @@ class AuctionBot(commands.Bot):
         self.forum_cm_id = int(os.getenv("FORUM_CM_ID"))
 
     async def setup_hook(self):
-        # Connexions DB
+        # Connect databases
         self.pg = await asyncpg.create_pool(os.getenv("POSTGRES_URL"))
         self.redis = aioredis.from_url(
             os.getenv("REDIS_URL"),
@@ -41,43 +41,42 @@ class AuctionBot(commands.Bot):
             decode_responses=True
         )
 
-        # Initialiser la base de données (création des tables si absentes)
+        # Initialize database schema
         await init_db(self.pg)
 
-        # Charger les cogs
+        # Load extensions (do not load utils as an extension)
         await self.load_extension("cogs.auction_core")
         await self.load_extension("cogs.submit")
         await self.load_extension("cogs.staff_review")
         await self.load_extension("cogs.batch_preparation")
         await self.load_extension("cogs.scheduler")
 
-        # Sync auto des commandes pour le serveur spécifié
+        # Auto-sync application commands to the target guild
         guild = discord.Object(id=self.guild_id)
         self.tree.copy_global_to(guild=guild)
         synced = await self.tree.sync(guild=guild)
-        logging.info(f"✅ Synced {len(synced)} commands to guild {self.guild_id}")
+        logging.info(f"Synced {len(synced)} commands to guild {self.guild_id}")
 
     async def close(self):
         await super().close()
         if self.pg:
             await self.pg.close()
         if self.redis:
-            await self.redis.aclose()  # aclose() au lieu de close()
+            await self.redis.aclose()  # use aclose() (close() is deprecated)
 
 bot = AuctionBot()
 
-# Commande /sync pour resynchroniser manuellement (admin uniquement)
 @bot.tree.command(name="sync", description="Force resync of slash commands")
 @commands.has_permissions(administrator=True)
 async def sync_cmd(interaction: discord.Interaction):
-    # Déférer immédiatement pour éviter l'expiration
+    # Defer immediately to avoid interaction timeout
     await interaction.response.defer(ephemeral=True)
 
     guild = discord.Object(id=interaction.guild_id)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
 
-    await interaction.followup.send(f"🔄 Synced {len(synced)} commands.")
+    await interaction.followup.send(f"Synced {len(synced)} commands.")
 
 def main():
     bot.run(os.getenv("DISCORD_TOKEN"))
