@@ -133,24 +133,6 @@ class StaffReviewView(discord.ui.View):
 class AuctionsStaff(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        
-    @app_commands.command(name="batch-clear", description="Supprime toutes les soumissions d’un batch donné")
-    @app_commands.describe(batch_id="L'identifiant du batch à vider")
-    @app_commands.guilds(discord.Object(id=GUILD_ID))
-    async def batch_clear(self, interaction: discord.Interaction, batch_id: int):
-        core = self.bot.get_cog("AuctionsCore")
-        if core is None or core.pg_pool is None:
-            return await interaction.response.send_message("❌ Core non prêt.", ephemeral=True)
-
-        async with core.pg_pool.acquire() as conn:
-            count = await conn.fetchval("SELECT COUNT(*) FROM submissions WHERE batch_id=$1", batch_id)
-            if count == 0:
-                return await interaction.response.send_message(f"Aucune soumission trouvée pour le batch {batch_id}.", ephemeral=True)
-
-            await conn.execute("DELETE FROM submissions WHERE batch_id=$1", batch_id)
-
-        await interaction.response.send_message(f"🗑️ Batch {batch_id} vidé ({count} soumissions supprimées).", ephemeral=False)
-    
 
     @app_commands.command(name="auction-list", description="Liste les soumissions en attente par batch")
     @app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -168,6 +150,25 @@ class AuctionsStaff(commands.Cog):
             embed.add_field(name=f"Batch {row['batch_id']}", value=f"{row['count']} cartes", inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # --- Nouvelle commande ---
+    @app_commands.command(name="batch-clear", description="Supprime toutes les soumissions d’un batch donné")
+    @app_commands.describe(batch_id="L'identifiant du batch à vider")
+    @app_commands.guilds(discord.Object(id=GUILD_ID))
+    async def batch_clear(self, interaction: discord.Interaction, batch_id: int):
+        core = self.bot.get_cog("AuctionsCore")
+        if core is None or core.pg_pool is None:
+            return await interaction.response.send_message("❌ Core non prêt.", ephemeral=True)
+
+        async with core.pg_pool.acquire() as conn:
+            count = await conn.fetchval("SELECT COUNT(*) FROM submissions WHERE batch_id=$1", batch_id)
+            if count == 0:
+                return await interaction.response.send_message(f"Aucune soumission trouvée pour le batch {batch_id}.", ephemeral=True)
+
+            await conn.execute("DELETE FROM submissions WHERE batch_id=$1", batch_id)
+
+        await interaction.response.send_message(f"🗑️ Batch {batch_id} vidé ({count} soumissions supprimées).", ephemeral=False)
+
 
 
 async def setup(bot: commands.Bot):
