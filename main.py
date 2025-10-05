@@ -5,6 +5,8 @@ from discord.ext import commands
 import asyncpg
 import redis.asyncio as aioredis
 
+from cogs.auction_core import init_db  # pour créer les tables au démarrage
+
 logging.basicConfig(level=logging.INFO)
 
 INTENTS = discord.Intents.default()
@@ -39,7 +41,10 @@ class AuctionBot(commands.Bot):
             decode_responses=True
         )
 
-        # Charger les cogs (ne pas charger utils comme extension)
+        # Initialiser la base de données (création des tables si absentes)
+        await init_db(self.pg)
+
+        # Charger les cogs
         await self.load_extension("cogs.auction_core")
         await self.load_extension("cogs.submit")
         await self.load_extension("cogs.staff_review")
@@ -57,8 +62,7 @@ class AuctionBot(commands.Bot):
         if self.pg:
             await self.pg.close()
         if self.redis:
-            # Utiliser aclose() (close() est déprécié)
-            await self.redis.aclose()
+            await self.redis.aclose()  # aclose() au lieu de close()
 
 bot = AuctionBot()
 
@@ -66,12 +70,14 @@ bot = AuctionBot()
 @bot.tree.command(name="sync", description="Force resync of slash commands")
 @commands.has_permissions(administrator=True)
 async def sync_cmd(interaction: discord.Interaction):
+    # Déférer immédiatement pour éviter l'expiration
+    await interaction.response.defer(ephemeral=True)
+
     guild = discord.Object(id=interaction.guild_id)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
-    await interaction.response.send_message(
-        f"🔄 Synced {len(synced)} commands.", ephemeral=True
-    )
+
+    await interaction.followup.send(f"🔄 Synced {len(synced)} commands.")
 
 def main():
     bot.run(os.getenv("DISCORD_TOKEN"))
