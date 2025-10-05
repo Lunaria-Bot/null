@@ -2,9 +2,9 @@
 import asyncio
 import logging
 import asyncpg
-import redis.asyncio as aioredis
 import discord
 from discord.ext import commands
+import redis.asyncio as aioredis  # on utilise redis.asyncio à la place d'aioredis
 
 from config.settings import BOT_TOKEN, PG_DSN, REDIS_URL
 from cogs.auction_core import AuctionCore
@@ -20,6 +20,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
+# ID de ton serveur Discord
+GUILD_ID = 1293611593845706793
+
+
 class AuctionBot(commands.Bot):
     def __init__(self, **kwargs):
         super().__init__(command_prefix="!", intents=intents, **kwargs)
@@ -27,11 +31,21 @@ class AuctionBot(commands.Bot):
         self.redis = None
 
     async def setup_hook(self):
-        # DB connections
-        self.pg = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
-        self.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+        # Connexion PostgreSQL
+        try:
+            self.pg = await asyncpg.create_pool(dsn=PG_DSN, min_size=1, max_size=5)
+            logging.info("✅ PostgreSQL pool initialized.")
+        except Exception as e:
+            logging.error(f"❌ PostgreSQL connection failed: {e}")
 
-        # Load cogs
+        # Connexion Redis
+        try:
+            self.redis = await aioredis.from_url(REDIS_URL, decode_responses=True)
+            logging.info("✅ Redis connected.")
+        except Exception as e:
+            logging.error(f"❌ Redis connection failed: {e}")
+
+        # Charger les cogs
         await self.add_cog(Utils(self))
         await self.add_cog(AuctionCore(self))
         await self.add_cog(Submit(self))
@@ -39,8 +53,11 @@ class AuctionBot(commands.Bot):
         await self.add_cog(BatchPreparation(self))
         await self.add_cog(Scheduler(self))
 
-        # Sync slash commands
-        await self.tree.sync()
+        # Synchronisation des commandes slash (forcée sur ton serveur)
+        guild = discord.Object(id=GUILD_ID)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        logging.info(f"✅ Slash commands synced to guild {GUILD_ID}")
 
     async def close(self):
         await super().close()
@@ -48,6 +65,7 @@ class AuctionBot(commands.Bot):
             await self.pg.close()
         if self.redis:
             await self.redis.close()
+
 
 bot = AuctionBot()
 
