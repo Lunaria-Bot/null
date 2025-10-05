@@ -162,3 +162,5 @@ async def get_or_create_today_batch(pool) -> int:
 async def lock_today_batch(pool):
     today = date.today()
     await pool.execute("UPDATE batches SET locked_at=NOW() WHERE batch_date=$1 AND locked_at IS NULL", today)
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AuctionCore(bot))
