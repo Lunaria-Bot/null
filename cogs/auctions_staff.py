@@ -95,10 +95,10 @@ class StaffReviewView(discord.ui.View):
             if not row:
                 return await interaction.followup.send("❌ Submission not found.", ephemeral=True)
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)  # always aware
             async with core.pg_pool.acquire() as conn:
                 batch_id = await assign_batch(conn, self.queue_choice, now)
-            release_at = next_daily_release(now)
+            release_at = next_daily_release(now)  # always aware
 
             async with core.pg_pool.acquire() as conn:
                 await conn.execute(
