@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import asyncpg
-import aioredis
+import redis.asyncio as aioredis
 import discord
 from discord.ext import commands
 
