@@ -1,3 +1,6 @@
-discord.py
-asyncpg
-redis
+# requirements.txt
+discord.py==2.3.2
+asyncpg==0.29.0
+aioredis==2.0.1
+python-dotenv==1.0.1
+tzdata==2024.1
