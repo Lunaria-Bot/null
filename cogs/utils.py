@@ -25,3 +25,9 @@ def queue_display_to_type(display: str) -> str:
 
 def type_to_queue_channel_id(bot: commands.Bot, qtype: str) -> int:
     return bot.queue_cm_id if qtype == "CARD_MAKER" else (bot.queue_skip_id if qtype == "SKIP" else bot.queue_normal_id)
+class Utils(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Utils(bot))
