@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands, tasks
 
-from .auctions_utils import next_daily_release, RELEASE_HOUR_UTC, RELEASE_MINUTE_UTC
+from .auctions_utils import next_daily_release, RELEASE_MINUTE_UTC
 
 class AuctionsScheduler(commands.Cog):
     def __init__(self, bot: commands.Bot):
