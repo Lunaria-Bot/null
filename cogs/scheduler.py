@@ -43,7 +43,6 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
             try:
-                # Fetch active and archived threads
                 threads = forum.threads + (await forum.archived_threads(limit=50)).threads
                 for thread in threads:
                     created = thread.created_at or datetime.now(CEST)
@@ -87,6 +86,14 @@ class Scheduler(commands.Cog):
         if posted_links and ping_channel:
             lines = [f"[{title}]({link})" for title, link in posted_links]
             await ping_channel.send("Today's auctions:\n" + "\n".join(lines))
+
+    # --- Debug command to force posting ---
+    @discord.app_commands.command(name="batch-post", description="Force posting of today's batch (debug).")
+    @discord.app_commands.default_permissions(administrator=True)
+    async def batch_post(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await self.post_forums_and_summary()
+        await interaction.followup.send("✅ Batch posting forced.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Scheduler(bot))
