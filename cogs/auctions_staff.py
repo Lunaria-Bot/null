@@ -10,7 +10,7 @@ from .auctions_utils import (
 )
 
 # Staff log channel
-STAFF_LOG_CHANNEL_ID = 123456789012345678  # <-- replace with your staff log channel ID
+STAFF_LOG_CHANNEL_ID = 1421465080238964796  # <-- replace with your staff log channel ID
 
 
 async def assign_batch(conn, queue_choice: str, now: datetime):
