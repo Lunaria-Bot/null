@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 import discord
 from discord.ext import commands
@@ -17,7 +16,7 @@ class AuctionBot(commands.Bot):
         self.pg = None
         self.redis = None
         self.guild_id = int(os.getenv("GUILD_ID"))
-        # IDs
+        # IDs (depuis les variables d'environnement)
         self.mazoku_bot_id = int(os.getenv("MAZOKU_BOT_ID"))
         self.mazoku_channel_id = int(os.getenv("MAZOKU_CHANNEL_ID"))
         self.ping_channel_id = int(os.getenv("PING_CHANNEL_ID"))
@@ -32,31 +31,49 @@ class AuctionBot(commands.Bot):
         self.forum_cm_id = int(os.getenv("FORUM_CM_ID"))
 
     async def setup_hook(self):
-        # DB connections
+        # Connexions DB
         self.pg = await asyncpg.create_pool(os.getenv("POSTGRES_URL"))
-        self.redis = aioredis.from_url(os.getenv("REDIS_URL"), encoding="utf-8", decode_responses=True)
+        self.redis = aioredis.from_url(
+            os.getenv("REDIS_URL"),
+            encoding="utf-8",
+            decode_responses=True
+        )
 
+        # Charger les cogs (ne pas charger utils comme extension)
         await self.load_extension("cogs.auction_core")
         await self.load_extension("cogs.submit")
         await self.load_extension("cogs.staff_review")
         await self.load_extension("cogs.batch_preparation")
         await self.load_extension("cogs.scheduler")
-        await self.load_extension("cogs.utils")
 
-        # Global slash registration
+        # Sync auto des commandes pour le serveur spécifié
         guild = discord.Object(id=self.guild_id)
         self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
+        synced = await self.tree.sync(guild=guild)
+        logging.info(f"✅ Synced {len(synced)} commands to guild {self.guild_id}")
 
     async def close(self):
         await super().close()
         if self.pg:
             await self.pg.close()
         if self.redis:
-            await self.redis.close()
+            # Utiliser aclose() (close() est déprécié)
+            await self.redis.aclose()
+
+bot = AuctionBot()
+
+# Commande /sync pour resynchroniser manuellement (admin uniquement)
+@bot.tree.command(name="sync", description="Force resync of slash commands")
+@commands.has_permissions(administrator=True)
+async def sync_cmd(interaction: discord.Interaction):
+    guild = discord.Object(id=interaction.guild_id)
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+    await interaction.response.send_message(
+        f"🔄 Synced {len(synced)} commands.", ephemeral=True
+    )
 
 def main():
-    bot = AuctionBot()
     bot.run(os.getenv("DISCORD_TOKEN"))
 
 if __name__ == "__main__":
