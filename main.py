@@ -15,11 +15,10 @@ async def on_ready():
     print("------")
 
     try:
-        guild = discord.Object(id=GUILD_ID)
-        synced = await bot.tree.sync(guild=guild)
-        print(f"✅ {len(synced)} commandes slash synchronisées pour {GUILD_ID}")
+        synced = await bot.tree.sync()
+        print(f"✅ {len(synced)} commandes globales synchronisées")
     except Exception as e:
-        print(f"❌ Erreur de sync: {e}")
+        print(f"❌ Erreur de sync globale: {e}")
 
 async def main():
     # Load all cogs
