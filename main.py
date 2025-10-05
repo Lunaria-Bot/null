@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = 123456789012345678  # <-- remplace par l'ID de ton serveur
+GUILD_ID = 1293611593845706793  # <-- remplace par l'ID de ton serveur
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -15,10 +15,11 @@ async def on_ready():
     print("------")
 
     try:
-        synced = await bot.tree.sync()
-        print(f"✅ {len(synced)} commandes globales synchronisées")
+        guild = discord.Object(id=GUILD_ID)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"✅ {len(synced)} commandes slash synchronisées pour {GUILD_ID}")
     except Exception as e:
-        print(f"❌ Erreur de sync globale: {e}")
+        print(f"❌ Erreur de sync: {e}")
 
 async def main():
     # Load all cogs
