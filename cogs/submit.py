@@ -145,4 +145,4 @@ class Submit(commands.Cog):
             view=view,
             ephemeral=True
         )
-w
+
