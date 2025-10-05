@@ -13,7 +13,7 @@ class Submit(commands.Cog):
         cached = await self.bot.redis.get(f"mazoku:card:{user_id}")
         if not cached:
             await interaction.response.send_message(
-                "Aucune carte Mazoku détectée récemment pour toi.", ephemeral=True
+                "No Mazoku card detected for you recently.", ephemeral=True
             )
             return
 
@@ -42,12 +42,12 @@ class Submit(commands.Cog):
                 view=view
             )
             await interaction.response.send_message(
-                "Je t’ai envoyé un message privé pour compléter la soumission.",
+                "I sent you a private message to complete the submission.",
                 ephemeral=True
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "Active tes MP pour recevoir le formulaire.",
+                "Enable your DMs so I can send you the form.",
                 ephemeral=True
             )
 
@@ -61,7 +61,6 @@ class ConfigView(discord.ui.View):
         self.currency = None
         self.rate = None
 
-        # Select menu
         queue_select = discord.ui.Select(
             placeholder="Select your queue",
             options=[
@@ -73,7 +72,6 @@ class ConfigView(discord.ui.View):
         queue_select.callback = self.on_queue_select
         self.add_item(queue_select)
 
-        # Buttons
         currency_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, label="Set Currency")
         currency_btn.callback = self.on_currency
         self.add_item(currency_btn)
@@ -96,7 +94,7 @@ class ConfigView(discord.ui.View):
     async def on_queue_select(self, interaction: discord.Interaction):
         self.queue_display = interaction.data["values"][0]
         await interaction.response.send_message(
-            f"Queue sélectionnée: {self.queue_display}", ephemeral=True
+            f"Queue selected: {self.queue_display}", ephemeral=True
         )
 
     async def on_currency(self, interaction: discord.Interaction):
@@ -104,19 +102,19 @@ class ConfigView(discord.ui.View):
         await interaction.response.send_modal(modal)
         await modal.wait()
         self.currency = modal.value
-        await interaction.followup.send("Currency défini.", ephemeral=True)
+        await interaction.followup.send("Currency set.", ephemeral=True)
 
     async def on_rate(self, interaction: discord.Interaction):
         modal = SimpleInputModal(title="Rate", label="Enter rate (ex 200:1)", key="rate")
         await interaction.response.send_modal(modal)
         await modal.wait()
         self.rate = modal.value
-        await interaction.followup.send("Rate défini.", ephemeral=True)
+        await interaction.followup.send("Rate set.", ephemeral=True)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not all([self.queue_display, self.currency, self.rate]):
             await interaction.response.send_message(
-                "Complète Queue, Currency et Rate avant de soumettre.", ephemeral=True
+                "Please complete Queue, Currency and Rate before submitting.", ephemeral=True
             )
             return
         qtype = queue_display_to_type(self.queue_display)
@@ -139,12 +137,12 @@ class ConfigView(discord.ui.View):
         self.data.get("image_url"))
 
         await interaction.response.send_message(
-            f"Auction #{rec['id']} soumis. En attente de review staff.", ephemeral=True
+            f"Auction #{rec['id']} submitted. Waiting for staff review.", ephemeral=True
         )
         self.stop()
 
     async def on_cancel(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Soumission annulée.", ephemeral=True)
+        await interaction.response.send_message("Submission cancelled.", ephemeral=True)
         self.stop()
 
 class SimpleInputModal(discord.ui.Modal, title="Input"):
@@ -157,7 +155,7 @@ class SimpleInputModal(discord.ui.Modal, title="Input"):
 
     async def on_submit(self, interaction: discord.Interaction):
         self.value = str(self.input.value).strip()
-        await interaction.response.send_message(f"{self.key.capitalize()} reçu.", ephemeral=True)
+        await interaction.response.send_message(f"{self.key.capitalize()} received.", ephemeral=True)
         self.stop()
 
 async def setup(bot: commands.Bot):
