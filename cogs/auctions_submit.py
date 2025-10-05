@@ -36,17 +36,22 @@ class AuctionsSubmit(commands.Cog):
         if card_embed.title:
             card_embed.title = strip_discord_emojis(card_embed.title)
 
-        dm = await interaction.user.create_dm()
-        view = self.AuctionSetupView(self.bot, interaction.user, card_embed)
-        # Send both the card preview AND the dynamic summary embed
-        dm_msg = await dm.send(
-            content="Please complete your auction submission:",
-            embeds=[card_embed, view.build_summary()],
-            view=view
-        )
-        view.message = dm_msg
+        try:
+            dm = await interaction.user.create_dm()
+            view = self.AuctionSetupView(self.bot, interaction.user, card_embed)
+            dm_msg = await dm.send(
+                content="Please complete your auction submission:",
+                embeds=[card_embed, view.build_summary()],
+                view=view
+            )
+            view.message = dm_msg
+            await interaction.response.send_message("📩 Check your DMs to finish your auction submission.", ephemeral=True)
 
-        await interaction.response.send_message("📩 Check your DMs to finish your auction submission.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I couldn't send you a DM. Please enable DMs from server members.",
+                ephemeral=True
+            )
 
     class AuctionSetupView(discord.ui.View):
         def __init__(self, bot: commands.Bot, user: discord.User, card_embed: discord.Embed):
@@ -59,13 +64,6 @@ class AuctionsSubmit(commands.Cog):
             self.queue_choice: str | None = None
             self.message: discord.Message | None = None
 
-            # Pre-create buttons with custom_id so we can style/rename them later
-            # Submit starts disabled until all fields are set
-            self.add_item(discord.ui.Button(label="Set Currency", style=discord.ButtonStyle.blurple, custom_id="currency_btn"))
-            self.add_item(discord.ui.Button(label="Set Rate", style=discord.ButtonStyle.gray, custom_id="rate_btn"))
-            self.add_item(discord.ui.Button(label="Submit Auction", style=discord.ButtonStyle.green, custom_id="submit_btn", disabled=True))
-            self.add_item(discord.ui.Button(label="Cancel", style=discord.ButtonStyle.red, custom_id="cancel_btn"))
-
         def build_summary(self) -> discord.Embed:
             desc = (
                 f"📦 Queue: {self.queue_choice or 'Not set'}\n"
@@ -75,29 +73,23 @@ class AuctionsSubmit(commands.Cog):
             return discord.Embed(title="Auction Submission Summary", description=desc, color=discord.Color.blurple())
 
         async def refresh_view(self):
-            """Update button labels/styles and the summary embed on the DM message."""
-            # Adjust buttons dynamically
             for child in self.children:
-                if not isinstance(child, discord.ui.Button):
-                    continue
-                if child.custom_id == "currency_btn":
-                    child.label = f"Currency: {self.currency}" if self.currency else "Set Currency"
-                    child.style = discord.ButtonStyle.green if self.currency else discord.ButtonStyle.blurple
-                elif child.custom_id == "rate_btn":
-                    child.label = f"Rate: {self.rate}" if self.rate else "Set Rate"
-                    child.style = discord.ButtonStyle.green if self.rate else discord.ButtonStyle.gray
-                elif child.custom_id == "submit_btn":
-                    label = "Submit Auction"
-                    if self.queue_choice:
-                        label = f"Submit to {self.queue_choice.capitalize()} Queue"
-                    child.label = label
-                    child.disabled = not (self.queue_choice and self.currency and self.rate)
+                if isinstance(child, discord.ui.Button):
+                    if child.custom_id == "currency":
+                        child.label = f"Currency: {self.currency}" if self.currency else "Set Currency"
+                        child.style = discord.ButtonStyle.green if self.currency else discord.ButtonStyle.blurple
+                    elif child.custom_id == "rate":
+                        child.label = f"Rate: {self.rate}" if self.rate else "Set Rate"
+                        child.style = discord.ButtonStyle.green if self.rate else discord.ButtonStyle.gray
+                    elif child.custom_id == "submit":
+                        label = "Submit Auction"
+                        if self.queue_choice:
+                            label = f"Submit to {self.queue_choice.capitalize()} Queue"
+                        child.label = label
+                        child.disabled = not (self.queue_choice and self.currency and self.rate)
 
             if self.message:
-                try:
-                    await self.message.edit(embeds=[self.card_embed, self.build_summary()], view=self)
-                except Exception as e:
-                    print("❌ Error refreshing view:", e)
+                await self.message.edit(embeds=[self.card_embed, self.build_summary()], view=self)
 
         async def interaction_check(self, interaction: discord.Interaction) -> bool:
             if interaction.user != self.user:
@@ -121,19 +113,19 @@ class AuctionsSubmit(commands.Cog):
             await interaction.followup.send(f"📂 Queue set to **{self.queue_choice}**", ephemeral=True)
             await self.refresh_view()
 
-        @discord.ui.button(label="Set Currency", style=discord.ButtonStyle.blurple, custom_id="currency_btn")
+        @discord.ui.button(label="Set Currency", style=discord.ButtonStyle.blurple, custom_id="currency")
         async def set_currency(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not await self.interaction_check(interaction):
                 return
             await interaction.response.send_modal(AuctionsSubmit.CurrencyModal(self))
 
-        @discord.ui.button(label="Set Rate", style=discord.ButtonStyle.gray, custom_id="rate_btn")
+        @discord.ui.button(label="Set Rate", style=discord.ButtonStyle.gray, custom_id="rate")
         async def set_rate(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not await self.interaction_check(interaction):
                 return
             await interaction.response.send_modal(AuctionsSubmit.RateModal(self))
 
-        @discord.ui.button(label="Submit Auction", style=discord.ButtonStyle.green, custom_id="submit_btn", disabled=True)
+        @discord.ui.button(label="Submit Auction", style=discord.ButtonStyle.green, custom_id="submit", disabled=True)
         async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not await self.interaction_check(interaction):
                 return
@@ -147,7 +139,6 @@ class AuctionsSubmit(commands.Cog):
             try:
                 await interaction.response.defer(ephemeral=True)
 
-                # Insert into DB
                 async with core.pg_pool.acquire() as conn:
                     row = await conn.fetchrow(
                         "INSERT INTO submissions(user_id, card, currency, rate, queue, status) "
@@ -160,7 +151,6 @@ class AuctionsSubmit(commands.Cog):
                     )
                     submission_id = row["id"]
 
-                # Send to queue channel
                 queue_channel_id = QUEUE_CHANNELS.get(self.queue_choice)
                 queue_channel = self.bot.get_channel(queue_channel_id)
                 if not queue_channel:
@@ -173,7 +163,6 @@ class AuctionsSubmit(commands.Cog):
                 )
                 thread = await msg.create_thread(name=f"Auction #{submission_id} – {self.card_embed.title or 'Card'}")
 
-                # Save queue message references in DB
                 async with core.pg_pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE submissions SET queue_message_id=$1, queue_channel_id=$2, queue_thread_id=$3 WHERE id=$4",
@@ -182,12 +171,8 @@ class AuctionsSubmit(commands.Cog):
 
                 await interaction.followup.send("✅ Submission sent to queue successfully!", ephemeral=True)
 
-                # Remove buttons after successful submission
                 if self.message:
-                    try:
-                        await self.message.edit(embeds=[self.card_embed, self.build_summary()], view=None)
-                    except Exception as e:
-                        print("❌ Error removing view after submit:", e)
+                    await self.message.edit(embeds=[self.card_embed, self.build_summary()], view=None)
                 self.stop()
 
             except Exception as e:
@@ -195,25 +180,18 @@ class AuctionsSubmit(commands.Cog):
                 if not interaction.response.is_done():
                     await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
 
-        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, custom_id="cancel_btn")
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, custom_id="cancel")
         async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not await self.interaction_check(interaction):
                 return
             await interaction.response.send_message("❌ Submission cancelled.", ephemeral=True)
             if self.message:
-                try:
-                    await self.message.edit(embeds=[self.card_embed, self.build_summary()], view=None)
-                except Exception as e:
-                    print("❌ Error removing view on cancel:", e)
+                await self.message.edit(embeds=[self.card_embed, self.build_summary()], view=None)
             self.stop()
 
         async def on_timeout(self):
-            # Called automatically after 10 minutes without interactions
             if self.message:
-                try:
-                    await self.message.edit(content="⏰ Submission timed out.", view=None)
-                except Exception as e:
-                    print("❌ Error setting timeout message:", e)
+                await self.message.edit(content="⏰ Submission timed out.", view=None)
 
     class CurrencyModal(discord.ui.Modal, title="Set Currency"):
         currency = discord.ui.TextInput(label="Currency", required=True)
