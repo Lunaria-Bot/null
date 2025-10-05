@@ -13,7 +13,7 @@ class StaffReview(commands.Cog):
             FROM auctions WHERE status='PENDING' ORDER BY id ASC
         """)
         if not rows:
-            await interaction.response.send_message("Aucune auction en attente.", ephemeral=True)
+            await interaction.response.send_message("No auctions pending.", ephemeral=True)
             return
         embed = discord.Embed(title="Pending Auctions", color=discord.Color.orange())
         for r in rows:
@@ -33,7 +33,7 @@ class StaffReview(commands.Cog):
             FROM auctions WHERE status='PENDING' ORDER BY id ASC LIMIT 1
         """)
         if not row:
-            await interaction.response.send_message("Rien à reviewer.", ephemeral=True)
+            await interaction.response.send_message("Nothing to review.", ephemeral=True)
             return
         name = row["title"] or f"{row['series']} v{row['version']}"
         embed = discord.Embed(title=f"Review Auction #{row['id']}", description=name, color=discord.Color.blurple())
@@ -58,7 +58,7 @@ class ReviewView(discord.ui.View):
             self.auction_id, 1, interaction.user.id, "accept"
         )
         await self.bot.pg.execute("UPDATE auctions SET status='READY' WHERE id=$1", self.auction_id)
-        await interaction.response.send_message(f"Auction #{self.auction_id} acceptée.", ephemeral=True)
+        await interaction.response.send_message(f"Auction #{self.auction_id} accepted.", ephemeral=True)
         try:
             user = await self.bot.fetch_user(self.user_id)
             await user.send("Your card has been accepted.")
@@ -77,7 +77,7 @@ class ReviewView(discord.ui.View):
             self.auction_id, 1, interaction.user.id, "deny", reason
         )
         await self.bot.pg.execute("UPDATE auctions SET status='DENIED' WHERE id=$1", self.auction_id)
-        await interaction.followup.send(f"Auction #{self.auction_id} refusée.", ephemeral=True)
+        await interaction.followup.send(f"Auction #{self.auction_id} denied.", ephemeral=True)
         try:
             user = await self.bot.fetch_user(self.user_id)
             await user.send(f"Your card has been refused. Reason: {reason}")
@@ -91,9 +91,10 @@ class ReasonModal(discord.ui.Modal, title="Reason"):
         self.input = discord.ui.TextInput(label="Enter reason", required=False, max_length=200)
         self.add_item(self.input)
         self.value = None
+
     async def on_submit(self, interaction: discord.Interaction):
         self.value = str(self.input.value).strip()
-        await interaction.response.send_message("Raison enregistrée.", ephemeral=True)
+        await interaction.response.send_message("Reason saved.", ephemeral=True)
         self.stop()
 
 async def setup(bot: commands.Bot):
