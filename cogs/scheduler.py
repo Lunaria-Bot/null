@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 from zoneinfo import ZoneInfo
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from .auction_core import lock_today_batch, get_or_create_today_batch
 from .utils import rarity_to_forum_id
 
@@ -18,8 +18,10 @@ class Scheduler(commands.Cog):
     @tasks.loop(minutes=1)
     async def tick(self):
         now = datetime.now(CEST)
+        # Lock the batch at 17:30 CEST
         if now.hour == 17 and now.minute == 30:
             await lock_today_batch(self.bot.pg)
+        # Close yesterday's threads and post today's auctions at 17:57 CEST
         if now.hour == 17 and now.minute == 57:
             await self.close_yesterday_threads()
             await self.post_forums_and_summary()
@@ -28,7 +30,6 @@ class Scheduler(commands.Cog):
         guild = self.bot.get_guild(self.bot.guild_id)
         if not guild:
             return
-        # Close all threads created yesterday in forums we manage (basic heuristic: archive + lock)
         forums = [
             guild.get_channel(self.bot.forum_common_id),
             guild.get_channel(self.bot.forum_rare_id),
@@ -41,14 +42,15 @@ class Scheduler(commands.Cog):
         for forum in forums:
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
-            async for thread in forum.threads:
-                # Note: forum.threads may be cached; for real-world use, fetch active/archived.
-                try:
+            try:
+                # Fetch active and archived threads
+                threads = forum.threads + (await forum.archived_threads(limit=50)).threads
+                for thread in threads:
                     created = thread.created_at or datetime.now(CEST)
                     if created.date() <= cutoff.date():
                         await thread.edit(archived=True, locked=True)
-                except Exception:
-                    pass
+            except Exception as e:
+                print("Error closing threads:", e)
 
     async def post_forums_and_summary(self):
         guild = self.bot.get_guild(self.bot.guild_id)
