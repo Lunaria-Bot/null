@@ -15,11 +15,8 @@ def next_daily_release(now: datetime) -> datetime:
     Calcule la prochaine heure de release quotidienne (21h57 UTC).
     Retourne toujours un datetime aware en UTC.
     """
-    release_time = time(21, 57, tzinfo=timezone.utc)
-    release_at = datetime.combine(now.date(), release_time)
-
-    if release_at.tzinfo is None:
-        release_at = release_at.replace(tzinfo=timezone.utc)
+    release_time = time(21, 57)  # pas de tzinfo ici
+    release_at = datetime.combine(now.date(), release_time, tzinfo=timezone.utc)  # force UTC aware
 
     if release_at <= now:
         release_at += timedelta(days=1)
@@ -31,10 +28,13 @@ def is_after_cutoff(now: datetime) -> bool:
     Vérifie si l'heure actuelle est après le cutoff (17h30 UTC).
     Retourne True si on est après 17h30 UTC, sinon False.
     """
-    cutoff = time(17, 30, tzinfo=timezone.utc)
+    cutoff_time = time(17, 30)
+    cutoff_dt = datetime.combine(now.date(), cutoff_time, tzinfo=timezone.utc)  # force UTC aware
+
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    return now.time() >= cutoff
+
+    return now >= cutoff_dt
 
 # --- Constantes de mapping ---
 RARITY_CHANNELS = {
