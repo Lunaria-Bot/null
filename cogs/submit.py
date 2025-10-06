@@ -10,7 +10,7 @@ QUEUE_OPTIONS = [
 ]
 
 CURRENCY_OPTIONS = [
-    discord.SelectOption(label="BS", value="BS", emoji="🪙", description="BloodStone"),
+    discord.SelectOption(label="BS", value="BS", emoji="🪙", description="Bloodstone"),
     discord.SelectOption(label="MS", value="MS", emoji="💎", description="Moonstone"),
     discord.SelectOption(label="BS & MS", value="BS+MS", emoji="⚖️", description="Both currencies, requires rate"),
     discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
@@ -21,10 +21,12 @@ def make_progress_footer(queue: str | None, currency: str | None, rate: str | No
     total = 3
     if queue: done += 1
     if currency: done += 1
-    if currency and currency not in {"MS", "BS+MS"}:
-        done += 1
-    elif currency in {"MS", "BS+MS"} and rate:
-        done += 1
+    # Le rate ne compte que pour BS+MS
+    if currency == "BS+MS":
+        if rate:
+            done += 1
+    else:
+        done += 1  # étape "rate" est considérée comme non requise pour les autres currencies
     return f"Setup progress: {done}/{total}"
 
 def build_preview_embed(user_id: int, data: dict, queue_display: str | None, currency: str | None, rate: str | None) -> discord.Embed:
@@ -44,10 +46,10 @@ def build_preview_embed(user_id: int, data: dict, queue_display: str | None, cur
 
     q_display = queue_display or "—"
     cur_display = currency or "—"
-    if currency in {"MS", "BS+MS"}:
+    if currency == "BS+MS":
         rate_display = rate or "—"
-    elif currency in {"BS", "PAYPAL"}:
-        rate_display = rate or "N/A"
+    elif currency in {"BS", "MS", "PAYPAL"}:
+        rate_display = "N/A"
     else:
         rate_display = "—"
 
@@ -123,7 +125,7 @@ class ConfigView(discord.ui.View):
 
         self.queue_select = QueueSelect(self)
         self.currency_select = CurrencySelect(self)
-        self.rate_button = discord.ui.Button(style=discord.ButtonStyle.secondary, label="Set rate", emoji="📝")
+        self.rate_button = discord.ui.Button(style=discord.ButtonStyle.secondary, label="Set rate", emoji="📝", disabled=True)
         self.submit_button = discord.ui.Button(style=discord.ButtonStyle.success, label="Submit", emoji="✅", disabled=True)
         self.cancel_button = discord.ui.Button(style=discord.ButtonStyle.danger, label="Cancel", emoji="🛑")
 
@@ -149,8 +151,12 @@ class ConfigView(discord.ui.View):
             self.currency = None
             note = (note or "") + "\nCurrency reset. Use BS, MS or BS & MS for Normal/Skip."
 
-        if self.currency not in {"MS", "BS+MS"} and not self.rate:
-            self.rate = None
+        # Désactiver le bouton "Set rate" sauf si la currency est BS+MS
+        if self.currency == "BS+MS":
+            self.rate_button.disabled = False
+        else:
+            self.rate_button.disabled = True
+            self.rate = None  # reset si inutile
 
         ready = self.is_ready()
         self.submit_button.disabled = not ready
@@ -169,7 +175,7 @@ class ConfigView(discord.ui.View):
     def is_ready(self) -> bool:
         if not self.queue_display or not self.currency:
             return False
-        if self.currency in {"MS", "BS+MS"} and not self.rate:
+        if self.currency == "BS+MS" and not self.rate:
             return False
         return True
 
@@ -186,9 +192,9 @@ class ConfigView(discord.ui.View):
             if self.currency not in {"BS", "MS", "BS+MS"}:
                 return await interaction.response.send_message("Use BS, MS or BS & MS for Normal/Skip.", ephemeral=True)
 
-        rate_value = self.rate if self.rate else ("N/A" if self.currency in {"BS", "PAYPAL"} else None)
-        if self.currency in {"MS", "BS+MS"} and not rate_value:
-            return await interaction.response.send_message("Rate is required when choosing MS or BS & MS.", ephemeral=True)
+        rate_value = self.rate if self.rate else ("N/A" if self.currency in {"BS", "MS", "PAYPAL"} else None)
+        if self.currency == "BS+MS" and not rate_value:
+            return await interaction.response.send_message("Rate is required when choosing BS & MS.", ephemeral=True)
 
         rec = await self.bot.pg.fetchrow("""
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
@@ -214,7 +220,7 @@ class ConfigView(discord.ui.View):
         )
         confirm.add_field(name="Queue", value=self.queue_display, inline=True)
         confirm.add_field(name="Currency", value=self.currency, inline=True)
-        confirm.add_field(name="Rate", value=rate_value, inline=True)
+        confirm.add_field(name="Rate", value=rate_value if rate_value else "—", inline=True)
         confirm.set_footer(text="Thank you! You’ll receive a DM after review.")
 
         fee_msg = None
@@ -223,7 +229,7 @@ class ConfigView(discord.ui.View):
         elif self.queue_display == "Skip queue":
             fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nSkip Queue: 2000bs"
         elif self.queue_display == "Card Maker":
-            fee_msg = "⚠️ Card Maker queue selected.\nThank you for submitting your card on Lilac."
+            fee_msg = "⚠️ Card Maker queue selected.\nPThank you for submitting your card in Lilac."
 
         try:
             await interaction.response.edit_message(content=fee_msg, embed=confirm, view=None)
@@ -250,7 +256,7 @@ class RateModal(discord.ui.Modal, title="Set rate"):
         self.parent_view = parent_view
         self.input = discord.ui.TextInput(
             label="Rate",
-            placeholder="Ex: 200:1 (empty for BS/PayPal)",
+            placeholder="Ex: 200:1 (only for BS+MS)",
             required=False,
             max_length=50
         )
