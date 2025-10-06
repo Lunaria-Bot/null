@@ -139,6 +139,29 @@ class BatchPreparation(commands.Cog):
             ephemeral=True
         )
 
+    @app_commands.command(name="batch-status", description="Show how many cards are still waiting in each queue.")
+    async def batch_status(self, interaction: discord.Interaction):
+        normals = await self.bot.pg.fetchval("""
+            SELECT COUNT(*) FROM auctions WHERE status='READY' AND queue_type='NORMAL'
+        """)
+        skips = await self.bot.pg.fetchval("""
+            SELECT COUNT(*) FROM auctions WHERE status='READY' AND queue_type='SKIP'
+        """)
+        cms = await self.bot.pg.fetchval("""
+            SELECT COUNT(*) FROM auctions WHERE status='READY' AND queue_type='CARD_MAKER'
+        """)
+
+        embed = discord.Embed(
+            title="📊 Batch Status",
+            description="Auctions still waiting to be batched",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="Normal queue", value=f"{normals} (max 15 per batch)", inline=False)
+        embed.add_field(name="Skip queue", value=f"{skips} (no limit)", inline=False)
+        embed.add_field(name="Card Maker", value=f"{cms} (no limit)", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 class BatchPaginationView(discord.ui.View):
     def __init__(self, rows, batch_date, owner_id: int):
