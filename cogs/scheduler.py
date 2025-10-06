@@ -55,6 +55,7 @@ class Scheduler(commands.Cog):
         guild = self.bot.get_guild(self.bot.guild_id)
         if not guild:
             return
+
         bid = await get_or_create_today_batch(self.bot.pg)
         items = await self.bot.pg.fetch("""
             SELECT bi.position, a.id, a.user_id, a.rarity, a.queue_type,
@@ -78,8 +79,15 @@ class Scheduler(commands.Cog):
                 f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}"
             )
 
-            # Build embed
-            embed = discord.Embed(description=f"<@{it['user_id']}>", color=discord.Color.blurple())
+            # Visual embed for the thread
+            embed = discord.Embed(
+                title=card_name,
+                description=f"Auction posted by <@{it['user_id']}>",
+                color=discord.Color.blurple()
+            )
+            embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=True)
+            embed.add_field(name="Rarity", value=it.get("rarity") or "?", inline=True)
+            embed.add_field(name="Queue", value=it.get("queue_type") or "?", inline=True)
             embed.add_field(name="Preference", value=it.get("currency") or "N/A", inline=True)
             embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
             embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
@@ -87,6 +95,7 @@ class Scheduler(commands.Cog):
                 embed.set_image(url=it["image_url"])
 
             try:
+                # create_thread returns ThreadWithMessage in discord.py 2.x
                 thread_with_msg = await forum.create_thread(
                     name=card_name,
                     content=None,
@@ -95,13 +104,35 @@ class Scheduler(commands.Cog):
                 thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
                 posted_links.append((card_name, link))
+
+                # Mark auction as posted
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
+
+                # Log "Auction posted" to the log channel
+                log_channel = guild.get_channel(self.bot.log_channel_id)
+                if log_channel:
+                    log_embed = discord.Embed(
+                        title="Auction posted",
+                        color=discord.Color.blue()
+                    )
+                    log_embed.add_field(name="Name of the card", value=card_name, inline=True)
+                    log_embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
+                    log_embed.add_field(name="Queue", value=it.get("queue_type") or "?", inline=True)
+                    log_embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=True)
+                    log_embed.add_field(name="Rarity", value=it.get("rarity") or "?", inline=True)
+                    log_embed.add_field(name="Currency", value=it.get("currency") or "N/A", inline=True)
+                    log_embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
+                    if it.get("image_url"):
+                        log_embed.set_image(url=it["image_url"])
+                    await log_channel.send(embed=log_embed)
+
             except Exception as e:
                 print("Error creating thread:", e)
 
-        # Delete the batch after posting
+        # Delete the batch after posting (batch_items are removed via ON DELETE CASCADE)
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
+        # Summary ping with links
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
         if posted_links and ping_channel:
             lines = [f"[{title}]({link})" for title, link in posted_links]
