@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
+from discord import app_commands, ui
 
 class StaffReview(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -29,36 +29,74 @@ class StaffReview(commands.Cog):
     @app_commands.command(name="auction-review", description="Open staff review controls.")
     @app_commands.default_permissions(manage_messages=True)
     async def auction_review(self, interaction: discord.Interaction):
-        row = await self.bot.pg.fetchrow("""
+        rows = await self.bot.pg.fetch("""
             SELECT id, user_id, rarity, queue_type, currency, rate, series, version, title, image_url
-            FROM auctions WHERE status='PENDING' ORDER BY id ASC LIMIT 1
+            FROM auctions WHERE status='PENDING' ORDER BY id ASC
         """)
+        if not rows:
+            return await interaction.response.send_message("Nothing to review.", ephemeral=True)
+
+        if len(rows) == 1:
+            row = rows[0]
+            embed, view = build_review_embed_and_view(self.bot, row)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        else:
+            view = AuctionSelectView(self.bot, rows)
+            await interaction.response.send_message("Select an auction to review:", view=view, ephemeral=True)
+
+
+# --- Construction de l’embed + boutons ---
+def build_review_embed_and_view(bot, row):
+    embed = discord.Embed(
+        title=row["title"] or f"Auction #{row['id']}",
+        description="Review Auction",
+        color=discord.Color.orange()
+    )
+    embed.add_field(name="Seller", value=f"<@{row['user_id']}>", inline=True)
+    embed.add_field(name="Rarity", value=row["rarity"], inline=True)
+    embed.add_field(name="Queue", value=row["queue_type"], inline=True)
+    embed.add_field(name="Preference", value=row["currency"], inline=True)
+    embed.add_field(name="Rate", value=row["rate"], inline=True)
+    embed.add_field(name="Version", value=row["version"] or "?", inline=True)
+    if row["image_url"]:
+        embed.set_image(url=row["image_url"])
+
+    view = ReviewView(bot, row["id"], row["user_id"])
+    return embed, view
+
+
+# --- Menu Select ---
+class AuctionSelect(ui.Select):
+    def __init__(self, bot, auctions):
+        self.bot = bot
+        options = []
+        for a in auctions:
+            label = a["title"] or f"{a['series']} v{a['version']}"
+            desc = f"{a['rarity']} | {a['queue_type']}"
+            options.append(discord.SelectOption(
+                label=label[:100],
+                description=desc[:100],
+                value=str(a["id"])
+            ))
+        super().__init__(placeholder="Choose an auction to review...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        auction_id = int(self.values[0])
+        row = await self.bot.pg.fetchrow("SELECT * FROM auctions WHERE id=$1", auction_id)
         if not row:
-            await interaction.response.send_message("Nothing to review.", ephemeral=True)
-            return
+            return await interaction.response.send_message("❌ Auction not found.", ephemeral=True)
 
-        # Embed amélioré
-        embed = discord.Embed(
-            title=row["title"] or f"Auction #{row['id']}",
-            description="Review Auction",
-            color=discord.Color.blurple()
-        )
-        embed.add_field(name="Seller", value=f"<@{row['user_id']}>", inline=True)
-        embed.add_field(name="Rarity", value=row["rarity"], inline=True)
-        embed.add_field(name="Queue", value=row["queue_type"], inline=True)
-        embed.add_field(name="Preference", value=row["currency"], inline=True)
-        embed.add_field(name="Rate", value=row["rate"], inline=True)
-        embed.add_field(name="Version", value=row["version"] or "?", inline=True)
-        if row["image_url"]:
-            embed.set_image(url=row["image_url"])
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=ReviewView(self.bot, row["id"], row["user_id"]),
-            ephemeral=True
-        )
+        embed, view = build_review_embed_and_view(self.bot, row)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
+class AuctionSelectView(ui.View):
+    def __init__(self, bot, auctions):
+        super().__init__(timeout=60)
+        self.add_item(AuctionSelect(bot, auctions))
+
+
+# --- Boutons Accept / Deny ---
 class ReviewView(discord.ui.View):
     def __init__(self, bot, auction_id: int, user_id: int):
         super().__init__(timeout=600)
@@ -76,7 +114,7 @@ class ReviewView(discord.ui.View):
         await interaction.response.send_message(f"Auction #{self.auction_id} accepted.", ephemeral=True)
 
         # Log accept
-        await self.log_action(interaction, "Auction accepted", discord.Color.green())
+        await self.log_action("Auction accepted", discord.Color.green())
 
         try:
             user = await self.bot.fetch_user(self.user_id)
@@ -91,7 +129,7 @@ class ReviewView(discord.ui.View):
         await interaction.response.send_modal(modal)
         self.stop()
 
-    async def log_action(self, interaction: discord.Interaction, title: str, color: discord.Color, reason: str = None):
+    async def log_action(self, title: str, color: discord.Color, reason: str = None):
         auction = await self.bot.pg.fetchrow("SELECT * FROM auctions WHERE id=$1", self.auction_id)
         if not auction:
             return
@@ -115,6 +153,7 @@ class ReviewView(discord.ui.View):
         await log_channel.send(embed=embed)
 
 
+# --- Modal pour raison du refus ---
 class ReasonModal(discord.ui.Modal, title="Reason"):
     def __init__(self, bot, auction_id: int, user_id: int):
         super().__init__(title="Reason")
@@ -135,8 +174,9 @@ class ReasonModal(discord.ui.Modal, title="Reason"):
 
         # Log deny
         view = ReviewView(self.bot, self.auction_id, self.user_id)
-        await view.log_action(interaction, "Auction denied", discord.Color.red(), reason)
+        await view.log_action("Auction denied", discord.Color.red(), reason)
 
+        # DM au vendeur
         try:
             user = await self.bot.fetch_user(self.user_id)
             await user.send(f"❌ Your card has been refused.\nReason: {reason}")
