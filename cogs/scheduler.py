@@ -78,32 +78,29 @@ class Scheduler(commands.Cog):
                 f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}"
             )
 
-            # Build the message content
-            user_mention = f"<@{it['user_id']}>"
-            currency = it.get("currency") or "N/A"
-            rate = it.get("rate") or "N/A"
-            version = it.get("version") or "?"
-            image_url = it.get("image_url")
-
-            content = (
-                f"{user_mention}\n"
-                f"Preference : {currency}\n"
-                f"Rate : {rate}\n"
-                f"Version : {version}"
-            )
-
-            embed = None
-            if image_url:
-                embed = discord.Embed()
-                embed.set_image(url=image_url)
+            # Build embed
+            embed = discord.Embed(description=f"<@{it['user_id']}>", color=discord.Color.blurple())
+            embed.add_field(name="Preference", value=it.get("currency") or "N/A", inline=True)
+            embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
+            embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
+            if it.get("image_url"):
+                embed.set_image(url=it["image_url"])
 
             try:
-                thread = await forum.create_thread(name=card_name, content=content, embed=embed)
+                thread_with_msg = await forum.create_thread(
+                    name=card_name,
+                    content=None,
+                    embed=embed
+                )
+                thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
                 posted_links.append((card_name, link))
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
             except Exception as e:
                 print("Error creating thread:", e)
+
+        # Delete the batch after posting
+        await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
         if posted_links and ping_channel:
