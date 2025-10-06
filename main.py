@@ -18,6 +18,7 @@ class AuctionBot(commands.Bot):
         self.pg = None
         self.redis = None
         self.guild_id = int(os.getenv("GUILD_ID"))
+
         # IDs from environment variables
         self.mazoku_bot_id = int(os.getenv("MAZOKU_BOT_ID"))
         self.mazoku_channel_id = int(os.getenv("MAZOKU_CHANNEL_ID"))
@@ -31,6 +32,9 @@ class AuctionBot(commands.Bot):
         self.forum_ssr_id = int(os.getenv("FORUM_SSR_ID"))
         self.forum_ur_id = int(os.getenv("FORUM_UR_ID"))
         self.forum_cm_id = int(os.getenv("FORUM_CM_ID"))
+
+        # Nouveau : channel de log
+        self.log_channel_id = int(os.getenv("LOG_CHANNEL_ID"))
 
     async def setup_hook(self):
         # Connect databases
