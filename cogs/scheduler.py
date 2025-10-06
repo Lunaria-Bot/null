@@ -57,7 +57,8 @@ class Scheduler(commands.Cog):
             return
         bid = await get_or_create_today_batch(self.bot.pg)
         items = await self.bot.pg.fetch("""
-            SELECT bi.position, a.id, a.user_id, a.rarity, a.queue_type, a.series, a.version, a.title
+            SELECT bi.position, a.id, a.user_id, a.rarity, a.queue_type,
+                   a.series, a.version, a.title, a.currency, a.rate, a.image_url
             FROM batch_items bi
             JOIN auctions a ON a.id=bi.auction_id
             WHERE bi.batch_id=$1
@@ -72,10 +73,32 @@ class Scheduler(commands.Cog):
             forum = guild.get_channel(forum_id)
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
-            card_name = it["title"] or (f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}")
-            initial_msg = f"Seller: <@{it['user_id']}> — Queue: {it['queue_type']}"
+
+            card_name = it["title"] or (
+                f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}"
+            )
+
+            # Build the message content
+            user_mention = f"<@{it['user_id']}>"
+            currency = it.get("currency") or "N/A"
+            rate = it.get("rate") or "N/A"
+            version = it.get("version") or "?"
+            image_url = it.get("image_url")
+
+            content = (
+                f"{user_mention}\n"
+                f"Preference : {currency}\n"
+                f"Rate : {rate}\n"
+                f"Version : {version}"
+            )
+
+            embed = None
+            if image_url:
+                embed = discord.Embed()
+                embed.set_image(url=image_url)
+
             try:
-                thread = await forum.create_thread(name=card_name, content=initial_msg)
+                thread = await forum.create_thread(name=card_name, content=content, embed=embed)
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
                 posted_links.append((card_name, link))
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
