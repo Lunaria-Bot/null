@@ -3,6 +3,59 @@ from discord.ext import commands
 from discord import app_commands
 from .utils import redis_json_load, queue_display_to_type
 
+QUEUE_OPTIONS = [
+    discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
+    discord.SelectOption(label="Skip queue", value="Skip queue", emoji="⏭️", description="Skip ahead in the queue"),
+    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Custom card by CM"),
+]
+
+CURRENCY_OPTIONS = [
+    discord.SelectOption(label="BS", value="BS", emoji="🪙", description="Bloodstone"),
+    discord.SelectOption(label="MS", value="MS", emoji="💎", description="Moonstone (requires rate)"),
+    discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
+]
+
+def make_progress_footer(queue: str | None, currency: str | None, rate: str | None) -> str:
+    done = 0
+    total = 3
+    if queue: done += 1
+    if currency: done += 1
+    if currency and currency != "MS":
+        done += 1
+    elif currency == "MS" and rate:
+        done += 1
+    return f"Setup progress: {done}/{total}"
+
+def build_preview_embed(user_id: int, data: dict, queue_display: str | None, currency: str | None, rate: str | None) -> discord.Embed:
+    title = data.get("title") or "Unknown Card"
+    series = data.get("series") or "Unknown Series"
+    version = data.get("version") or "?"
+    batch_no = data.get("batch")
+    rarity = (data.get("rarity") or "COMMON")
+    image_url = data.get("image_url")
+
+    embed = discord.Embed(title=title, color=discord.Color.blurple())
+    embed.add_field(name="Series", value=series, inline=True)
+    embed.add_field(name="Version", value=str(version), inline=True)
+    embed.add_field(name="Batch", value=str(batch_no or "?"), inline=True)
+    embed.add_field(name="Owned by", value=f"<@{user_id}>", inline=False)
+    embed.add_field(name="Rarity", value=rarity, inline=True)
+
+    q_display = queue_display or "—"
+    cur_display = currency or "—"
+    rate_display = (rate or "—") if (currency == "MS") else (rate or "N/A" if currency in {"BS", "PAYPAL"} else "—")
+
+    embed.add_field(name="Queue", value=q_display, inline=True)
+    embed.add_field(name="Currency", value=cur_display, inline=True)
+    embed.add_field(name="Rate", value=rate_display, inline=True)
+
+    if image_url:
+        embed.set_image(url=image_url)
+
+    embed.set_footer(text=make_progress_footer(queue_display, currency, rate))
+    return embed
+
+
 class Submit(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -12,44 +65,44 @@ class Submit(commands.Cog):
         user_id = interaction.user.id
         cached = await self.bot.redis.get(f"mazoku:card:{user_id}")
         if not cached:
-            await interaction.response.send_message(
-                "No Mazoku card detected for you recently.", ephemeral=True
-            )
+            await interaction.response.send_message("No Mazoku card detected for you recently.", ephemeral=True)
             return
 
         data = redis_json_load(cached)
-        title = data.get("title") or "Unknown Card"
-        series = data.get("series") or "Unknown Series"
-        version = data.get("version") or "?"
-        batch_no = data.get("batch")
-        rarity = data.get("rarity") or "COMMON"
-        image_url = data.get("image_url")
-
-        embed = discord.Embed(title=title, color=discord.Color.blurple())
-        embed.add_field(name="Series", value=series, inline=True)
-        embed.add_field(name="Version", value=str(version), inline=True)
-        embed.add_field(name="Batch", value=str(batch_no or "?"), inline=True)
-        embed.add_field(name="Owned by", value=f"<@{user_id}>", inline=False)
-        embed.set_footer(text=f"Rarity: {rarity}")
-        if image_url:
-            embed.set_image(url=image_url)
 
         view = ConfigView(self.bot, user_id, data)
+        embed = build_preview_embed(user_id, data, view.queue_display, view.currency, view.rate)
+
         try:
             await interaction.user.send(
-                content="Complete your auction submission:",
+                content="Setup your auction below. Pick queue, currency, and rate if needed, then submit.",
                 embed=embed,
                 view=view
             )
-            await interaction.response.send_message(
-                "I sent you a private message to complete the submission.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("I sent you a private message to complete the submission.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message(
-                "Enable your DMs so I can send you the form.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("Enable your DMs so I can send you the form.", ephemeral=True)
+
+
+class QueueSelect(discord.ui.Select):
+    def __init__(self, parent_view: "ConfigView"):
+        super().__init__(placeholder="Select your queue", min_values=1, max_values=1, options=QUEUE_OPTIONS)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.queue_display = self.values[0]
+        await self.parent_view.refresh(interaction, note=f"Queue selected: {self.parent_view.queue_display}")
+
+
+class CurrencySelect(discord.ui.Select):
+    def __init__(self, parent_view: "ConfigView"):
+        super().__init__(placeholder="Select currency", min_values=1, max_values=1, options=CURRENCY_OPTIONS)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.currency = self.values[0]
+        await self.parent_view.refresh(interaction, note=f"Currency set: {self.parent_view.currency}")
+
 
 class ConfigView(discord.ui.View):
     def __init__(self, bot, user_id, data):
@@ -57,116 +110,79 @@ class ConfigView(discord.ui.View):
         self.bot = bot
         self.user_id = user_id
         self.data = data
-        self.queue_display = None
-        self.currency = None
-        self.rate = None
 
-        queue_select = discord.ui.Select(
-            placeholder="Select your queue",
-            options=[
-                discord.SelectOption(label="Normal queue", value="Normal queue"),
-                discord.SelectOption(label="Skip queue", value="Skip queue"),
-                discord.SelectOption(label="Card Maker", value="Card Maker"),
-            ]
-        )
-        queue_select.callback = self.on_queue_select
-        self.add_item(queue_select)
+        self.queue_display: str | None = None
+        self.currency: str | None = None
+        self.rate: str | None = None
 
-        currency_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, label="Set Currency")
-        currency_btn.callback = self.on_currency
-        self.add_item(currency_btn)
+        self.queue_select = QueueSelect(self)
+        self.currency_select = CurrencySelect(self)
+        self.rate_button = discord.ui.Button(style=discord.ButtonStyle.secondary, label="Set rate", emoji="📝")
+        self.submit_button = discord.ui.Button(style=discord.ButtonStyle.success, label="Submit", emoji="✅", disabled=True)
+        self.cancel_button = discord.ui.Button(style=discord.ButtonStyle.danger, label="Cancel", emoji="🛑")
 
-        rate_btn = discord.ui.Button(style=discord.ButtonStyle.secondary, label="Set Rate")
-        rate_btn.callback = self.on_rate
-        self.add_item(rate_btn)
+        self.rate_button.callback = self.on_rate
+        self.submit_button.callback = self.on_submit
+        self.cancel_button.callback = self.on_cancel
 
-        submit_btn = discord.ui.Button(style=discord.ButtonStyle.primary, label="Submit Auction")
-        submit_btn.callback = self.on_submit
-        self.add_item(submit_btn)
-
-        cancel_btn = discord.ui.Button(style=discord.ButtonStyle.danger, label="Cancel")
-        cancel_btn.callback = self.on_cancel
-        self.add_item(cancel_btn)
+        self.add_item(self.queue_select)
+        self.add_item(self.currency_select)
+        self.add_item(self.rate_button)
+        self.add_item(self.submit_button)
+        self.add_item(self.cancel_button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.user_id
 
-    async def on_queue_select(self, interaction: discord.Interaction):
-        self.queue_display = interaction.data["values"][0]
-        await interaction.response.send_message(
-            f"Queue selected: {self.queue_display}", ephemeral=True
-        )
+    async def refresh(self, interaction: discord.Interaction, note: str | None = None):
+        qtype = queue_display_to_type(self.queue_display) if self.queue_display else None
+        if qtype == "CM" and self.currency not in {None, "PAYPAL"}:
+            self.currency = None
+            note = (note or "") + "\nCurrency reset. Only PayPal is allowed for Card Maker."
+        if qtype in {"NORMAL", "SKIP"} and self.currency not in {None, "BS", "MS"}:
+            self.currency = None
+            note = (note or "") + "\nCurrency reset. Use BS or MS for Normal/Skip."
 
-    async def on_currency(self, interaction: discord.Interaction):
-        # Currency required; accepts BS/MS, or PAYPAL only if queue is Card Maker
-        modal = SimpleInputModal(
-            title="Currency",
-            label="Enter currency (BS/MS or Paypal if CM)",
-            key="currency",
-            required=True,
-            max_length=20
-        )
-        await interaction.response.send_modal(modal)
-        await modal.wait()
-        self.currency = (modal.value or "").strip().upper()
-        await interaction.followup.send("Currency set.", ephemeral=True)
+        if self.currency != "MS" and not self.rate:
+            self.rate = None
+
+        ready = self.is_ready()
+        self.submit_button.disabled = not ready
+
+        embed = build_preview_embed(self.user_id, self.data, self.queue_display, self.currency, self.rate)
+        content = note if note else None
+
+        try:
+            if interaction.message:
+                await interaction.response.edit_message(content=content, embed=embed, view=self)
+            else:
+                await interaction.response.send_message(content=content or "Updated.", embed=embed, view=self)
+        except discord.InteractionResponded:
+            await interaction.followup.send(content=content or "Updated.", embed=embed, view=self)
+
+    def is_ready(self) -> bool:
+        if not self.queue_display or not self.currency:
+            return False
+        if self.currency == "MS" and not self.rate:
+            return False
+        return True
 
     async def on_rate(self, interaction: discord.Interaction):
-        # Rate optional if BS or CM(Paypal), required if MS
-        modal = SimpleInputModal(
-            title="Rate",
-            label="Enter rate (ex 200:1). Leave empty if BS/Paypal",
-            key="rate",
-            required=False,
-            max_length=50
-        )
+        modal = RateModal(self)
         await interaction.response.send_modal(modal)
-        await modal.wait()
-        self.rate = (modal.value or "").strip()
-        await interaction.followup.send("Rate set.", ephemeral=True)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not self.queue_display:
-            await interaction.response.send_message(
-                "Please select a Queue before submitting.", ephemeral=True
-            )
-            return
-        if not self.currency:
-            await interaction.response.send_message(
-                "Please set a Currency before submitting.", ephemeral=True
-            )
-            return
-
-        qtype = queue_display_to_type(self.queue_display)  # "NORMAL" | "SKIP" | "CM"
-
-        # Validate currency according to queue type
-        valid = False
+        qtype = queue_display_to_type(self.queue_display)
         if qtype == "CM":
-            # Only PAYPAL is allowed for Card Maker
-            valid = self.currency in {"PAYPAL", "PP", "PAY PAL"}
-            if valid and self.currency != "PAYPAL":
-                self.currency = "PAYPAL"
+            if self.currency != "PAYPAL":
+                return await interaction.response.send_message("Only PayPal is allowed for Card Maker.", ephemeral=True)
         else:
-            # BS or MS for NORMAL/SKIP queues
-            valid = self.currency in {"BS", "MS"}
+            if self.currency not in {"BS", "MS"}:
+                return await interaction.response.send_message("Use BS or MS for Normal/Skip.", ephemeral=True)
 
-        if not valid:
-            await interaction.response.send_message(
-                "Invalid currency for the selected queue. Use BS/MS for Normal/Skip, or Paypal for Card Maker.",
-                ephemeral=True
-            )
-            return
-
-        # Enforce rate requirement
-        if self.currency == "MS" and not self.rate:
-            await interaction.response.send_message(
-                "You must provide a Rate when choosing MS.", ephemeral=True
-            )
-            return
-
-        # Default rate for BS or Paypal when not provided
-        if self.currency in {"BS", "PAYPAL"} and not self.rate:
-            self.rate = "N/A"
+        rate_value = self.rate if self.rate else ("N/A" if self.currency in {"BS", "PAYPAL"} else None)
+        if self.currency == "MS" and not rate_value:
+            return await interaction.response.send_message("Rate is required when choosing MS.", ephemeral=True)
 
         rec = await self.bot.pg.fetchrow("""
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
@@ -181,31 +197,64 @@ class ConfigView(discord.ui.View):
         (self.data.get("rarity") or "COMMON"),
         qtype,
         self.currency,
-        self.rate,
+        rate_value,
         self.data.get("title"),
         self.data.get("image_url"))
 
-        await interaction.response.send_message(
-            f"Auction #{rec['id']} submitted. Waiting for staff review.", ephemeral=True
+        # Confirmation finale
+        confirm = discord.Embed(
+            title=f"Auction #{rec['id']} submitted",
+            description="Your auction is now pending staff review.",
+            color=discord.Color.green()
         )
+        confirm.add_field(name="Queue", value=self.queue_display, inline=True)
+        confirm.add_field(name="Currency", value=self.currency, inline=True)
+        confirm.add_field(name="Rate", value=rate_value, inline=True)
+        confirm.set_footer(text="Thank you! You’ll receive a DM after review.")
+
+        # Rappel des frais selon la queue
+        fee_msg = None
+        if self.queue_display == "Normal queue":
+            fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nNormal Queue: 500bs"
+        elif self.queue_display == "Skip queue":
+            fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nSkip Queue: 2000bs"
+        elif self.queue_display == "Card Maker":
+            fee_msg = "⚠️ Card Maker queue selected.\nThank you for choosing Lilac !."
+
+        try:
+            await interaction.response.edit_message(content=fee_msg, embed=confirm, view=None)
+        except discord.InteractionResponded:
+            await interaction.followup.send(content=fee_msg, embed=confirm, view=None)
         self.stop()
 
     async def on_cancel(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Submission cancelled.", ephemeral=True)
+        cancel = discord.Embed(
+            title="Submission cancelled",
+            description="No data was saved. You can run /auction-submit again anytime.",
+            color=discord.Color.red()
+        )
+        try:
+            await interaction.response.edit_message(content=None, embed=cancel, view=None)
+        except discord.InteractionResponded:
+            await interaction.followup.send(embed=cancel, view=None)
         self.stop()
 
-class SimpleInputModal(discord.ui.Modal, title="Input"):
-    def __init__(self, title: str, label: str, key: str, required: bool = True, max_length: int = 100):
-        super().__init__(title=title)
-        self.input = discord.ui.TextInput(label=label, required=required, max_length=max_length)
+
+class RateModal(discord.ui.Modal, title="Set rate"):
+    def __init__(self, parent_view: ConfigView):
+        super().__init__(title="Set rate")
+        self.parent_view = parent_view
+        self.input = discord.ui.TextInput(
+            label="Enter rate (e.g., 200:1). Leave empty for BS/PayPal.",
+            required=False,
+            max_length=50
+        )
         self.add_item(self.input)
-        self.key = key
-        self.value = None
 
     async def on_submit(self, interaction: discord.Interaction):
-        self.value = (self.input.value or "").strip()
-        await interaction.response.send_message(f"{self.key.capitalize()} received.", ephemeral=True)
-        self.stop()
+        self.parent_view.rate = (self.input.value or "").strip()
+        await self.parent_view.refresh(interaction, note="Rate updated.")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Submit(bot))
