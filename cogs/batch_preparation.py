@@ -20,17 +20,34 @@ class BatchPreparation(commands.Cog):
         await self.bot.pg.execute("DELETE FROM batch_items WHERE batch_id=$1", bid)
         await interaction.response.send_message(f"Batch #{bid} cleared.", ephemeral=True)
 
-    @app_commands.command(name="batch-fill", description="Fill batch with READY auctions (15 Normal, then extras).")
+    @app_commands.command(
+        name="batch-fill",
+        description="Fill batch with READY auctions (15 Normal max, unlimited Skip & CardMaker)."
+    )
     @app_commands.default_permissions(manage_messages=True)
     async def batch_fill(self, interaction: discord.Interaction):
         bid = await get_or_create_today_batch(self.bot.pg)
 
+        # Normal queue : max 15
         normals = await self.bot.pg.fetch("""
-            SELECT id FROM auctions WHERE status='READY' AND queue_type='NORMAL' ORDER BY id ASC LIMIT 15
+            SELECT id FROM auctions
+            WHERE status='READY' AND queue_type='NORMAL'
+            ORDER BY id ASC
+            LIMIT 15
         """)
-        extras = await self.bot.pg.fetch("""
-            SELECT id FROM auctions WHERE status='READY' AND queue_type IN ('NORMAL','CARD_MAKER')
-            ORDER BY id ASC OFFSET 15
+
+        # Skip queue : illimité
+        skips = await self.bot.pg.fetch("""
+            SELECT id FROM auctions
+            WHERE status='READY' AND queue_type='SKIP'
+            ORDER BY id ASC
+        """)
+
+        # Card Maker : illimité
+        cms = await self.bot.pg.fetch("""
+            SELECT id FROM auctions
+            WHERE status='READY' AND queue_type='CARD_MAKER'
+            ORDER BY id ASC
         """)
 
         position = 1
@@ -40,14 +57,26 @@ class BatchPreparation(commands.Cog):
                 bid, row["id"], position
             )
             position += 1
-        for row in extras:
+
+        for row in skips:
             await self.bot.pg.execute(
                 "INSERT INTO batch_items (batch_id, auction_id, position) VALUES ($1,$2,$3)",
                 bid, row["id"], position
             )
             position += 1
 
-        await interaction.response.send_message(f"Batch #{bid} filled with {position-1} items.", ephemeral=True)
+        for row in cms:
+            await self.bot.pg.execute(
+                "INSERT INTO batch_items (batch_id, auction_id, position) VALUES ($1,$2,$3)",
+                bid, row["id"], position
+            )
+            position += 1
+
+        await interaction.response.send_message(
+            f"Batch #{bid} filled with {position-1} items "
+            f"({len(normals)} Normal, {len(skips)} Skip, {len(cms)} CardMaker).",
+            ephemeral=True
+        )
 
     @app_commands.command(name="batch-view", description="View the cards in today's batch (with pagination).")
     @app_commands.describe(date="Optional date (YYYY-MM-DD)")
