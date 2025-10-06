@@ -98,26 +98,75 @@ class ConfigView(discord.ui.View):
         )
 
     async def on_currency(self, interaction: discord.Interaction):
-        modal = SimpleInputModal(title="Currency", label="Enter currency (BS/MS or Paypal if CM)", key="currency")
+        # Currency required; accepts BS/MS, or PAYPAL only if queue is Card Maker
+        modal = SimpleInputModal(
+            title="Currency",
+            label="Enter currency (BS/MS or Paypal if CM)",
+            key="currency",
+            required=True,
+            max_length=20
+        )
         await interaction.response.send_modal(modal)
         await modal.wait()
-        self.currency = modal.value
+        self.currency = (modal.value or "").strip().upper()
         await interaction.followup.send("Currency set.", ephemeral=True)
 
     async def on_rate(self, interaction: discord.Interaction):
-        modal = SimpleInputModal(title="Rate", label="Enter rate (ex 200:1)", key="rate")
+        # Rate optional if BS or CM(Paypal), required if MS
+        modal = SimpleInputModal(
+            title="Rate",
+            label="Enter rate (ex 200:1). Leave empty if BS/Paypal",
+            key="rate",
+            required=False,
+            max_length=50
+        )
         await interaction.response.send_modal(modal)
         await modal.wait()
-        self.rate = modal.value
+        self.rate = (modal.value or "").strip()
         await interaction.followup.send("Rate set.", ephemeral=True)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not all([self.queue_display, self.currency, self.rate]):
+        if not self.queue_display:
             await interaction.response.send_message(
-                "Please complete Queue, Currency and Rate before submitting.", ephemeral=True
+                "Please select a Queue before submitting.", ephemeral=True
             )
             return
-        qtype = queue_display_to_type(self.queue_display)
+        if not self.currency:
+            await interaction.response.send_message(
+                "Please set a Currency before submitting.", ephemeral=True
+            )
+            return
+
+        qtype = queue_display_to_type(self.queue_display)  # "NORMAL" | "SKIP" | "CM"
+
+        # Validate currency according to queue type
+        valid = False
+        if qtype == "CM":
+            # Only PAYPAL is allowed for Card Maker
+            valid = self.currency in {"PAYPAL", "PP", "PAY PAL"}
+            if valid and self.currency != "PAYPAL":
+                self.currency = "PAYPAL"
+        else:
+            # BS or MS for NORMAL/SKIP queues
+            valid = self.currency in {"BS", "MS"}
+
+        if not valid:
+            await interaction.response.send_message(
+                "Invalid currency for the selected queue. Use BS/MS for Normal/Skip, or Paypal for Card Maker.",
+                ephemeral=True
+            )
+            return
+
+        # Enforce rate requirement
+        if self.currency == "MS" and not self.rate:
+            await interaction.response.send_message(
+                "You must provide a Rate when choosing MS.", ephemeral=True
+            )
+            return
+
+        # Default rate for BS or Paypal when not provided
+        if self.currency in {"BS", "PAYPAL"} and not self.rate:
+            self.rate = "N/A"
 
         rec = await self.bot.pg.fetchrow("""
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
@@ -146,15 +195,15 @@ class ConfigView(discord.ui.View):
         self.stop()
 
 class SimpleInputModal(discord.ui.Modal, title="Input"):
-    def __init__(self, title: str, label: str, key: str):
+    def __init__(self, title: str, label: str, key: str, required: bool = True, max_length: int = 100):
         super().__init__(title=title)
-        self.input = discord.ui.TextInput(label=label, required=True, max_length=100)
+        self.input = discord.ui.TextInput(label=label, required=required, max_length=max_length)
         self.add_item(self.input)
         self.key = key
         self.value = None
 
     async def on_submit(self, interaction: discord.Interaction):
-        self.value = str(self.input.value).strip()
+        self.value = (self.input.value or "").strip()
         await interaction.response.send_message(f"{self.key.capitalize()} received.", ephemeral=True)
         self.stop()
 
