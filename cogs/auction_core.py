@@ -5,6 +5,9 @@ from discord.ext import commands
 from typing import Optional, Dict
 from datetime import date
 
+# Pour la commande admin /auction-force-ready
+from discord import app_commands
+
 RARITY_FROM_EMOJI_ID = {
     1342202203515125801: "UR",
     1342202212948115510: "SSR",
@@ -62,6 +65,43 @@ def parse_rarity(embed_dict: Dict) -> Optional[str]:
             return key
     return None
 
+# --- Log utilitaire quand une carte entre en waiting list (READY) ---
+async def log_card_ready(bot: commands.Bot, auction: Dict):
+    guild = bot.get_guild(bot.guild_id)
+    if not guild:
+        return
+    log_channel = guild.get_channel(bot.log_channel_id)
+    if not log_channel:
+        return
+
+    card_name = auction["title"] or (
+        f"{auction['series']} v{auction['version']}" if auction.get("series") and auction.get("version") else f"Auction #{auction['id']}"
+    )
+
+    embed = discord.Embed(
+        title="Card added to waiting list",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Name of the card", value=card_name, inline=True)
+    embed.add_field(name="Version", value=auction.get("version") or "?", inline=True)
+    embed.add_field(name="Queue", value=auction.get("queue_type") or "?", inline=True)
+    embed.add_field(name="Seller", value=f"<@{auction['user_id']}>", inline=True)
+    embed.add_field(name="Rarity", value=auction.get("rarity") or "?", inline=True)
+    embed.add_field(name="Currency", value=auction.get("currency") or "N/A", inline=True)
+    embed.add_field(name="Rate", value=auction.get("rate") or "N/A", inline=True)
+    if auction.get("image_url"):
+        embed.set_image(url=auction["image_url"])
+
+    await log_channel.send(embed=embed)
+
+# --- Helper: marquer une enchère READY et loguer ---
+async def mark_auction_ready(bot: commands.Bot, pool, auction_id: int):
+    await pool.execute("UPDATE auctions SET status='READY' WHERE id=$1", auction_id)
+    auction = await pool.fetchrow("SELECT * FROM auctions WHERE id=$1", auction_id)
+    if auction:
+        await log_card_ready(bot, dict(auction))
+    return auction
+
 class AuctionCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -108,6 +148,17 @@ class AuctionCore(commands.Cog):
         }
 
         await self.bot.redis.set(f"mazoku:card:{owner_id}", json.dumps(payload), ex=600)
+
+    # --- Commande admin pour forcer READY + log ---
+    @app_commands.command(name="auction-force-ready", description="Force an auction to READY and log it (admin).")
+    @app_commands.default_permissions(administrator=True)
+    async def auction_force_ready(self, interaction: discord.Interaction, auction_id: int):
+        await interaction.response.defer(ephemeral=True)
+        auction = await mark_auction_ready(self.bot, self.bot.pg, auction_id)
+        if auction:
+            await interaction.followup.send(f"✅ Auction #{auction_id} forced to READY and logged.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Auction #{auction_id} not found.", ephemeral=True)
 
 async def init_db(pool):
     await pool.execute("""
@@ -162,5 +213,6 @@ async def get_or_create_today_batch(pool) -> int:
 async def lock_today_batch(pool):
     today = date.today()
     await pool.execute("UPDATE batches SET locked_at=NOW() WHERE batch_date=$1 AND locked_at IS NULL", today)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(AuctionCore(bot))
