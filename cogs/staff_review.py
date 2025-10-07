@@ -9,6 +9,10 @@ QUEUE_CHANNELS = {
     "CM": 1395404596230361209,
 }
 
+# Channel de log global (actions staff)
+LOG_CHANNEL_ID = 1424688704584286248
+
+
 class StaffReview(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -53,7 +57,7 @@ class StaffReview(commands.Cog):
         embed.add_field(name="Rarity", value=auction["rarity"], inline=True)
         embed.add_field(name="Queue", value=auction["queue_type"], inline=True)
         embed.add_field(name="Currency", value=auction["currency"], inline=True)
-        embed.add_field(name="Rate", value=auction["rate"] or "—", inline=True)
+        embed.add_field(name="Rate", value=auction["rate"] or "N/A", inline=True)
         embed.add_field(name="Version", value=auction["version"] or "?", inline=True)
         if auction["image_url"]:
             embed.set_image(url=auction["image_url"])
@@ -71,41 +75,142 @@ class ReviewButtons(discord.ui.View):
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ReasonModal(self.bot, self.auction_id, "ACCEPT")
+        # Ouvre un modal avec raison facultative et référence au message à modifier
+        modal = ReasonModal(self.bot, self.auction_id, "ACCEPT", interaction.message)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ReasonModal(self.bot, self.auction_id, "DENY")
+        modal = ReasonModal(self.bot, self.auction_id, "DENY", interaction.message)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="💰 Fee paid", style=discord.ButtonStyle.secondary)
     async def fee_paid(self, interaction: discord.Interaction, button: discord.ui.Button):
         msg = interaction.message
+        if not msg.embeds:
+            return await interaction.response.send_message("No embed to update.", ephemeral=True)
+
         embed = msg.embeds[0]
-        embed.add_field(name="Fees", value="Paid", inline=False)
-        await msg.edit(embed=embed, view=self)
+
+        # Mettre à jour/ajouter le champ Fees: Paid (éviter les doublons)
+        updated_fields = []
+        fees_updated = False
+        for f in embed.fields:
+            if f.name.lower() == "fees":
+                updated_fields.append(("Fees", "Paid", False))
+                fees_updated = True
+            else:
+                updated_fields.append((f.name, f.value, f.inline))
+        if not fees_updated:
+            updated_fields.append(("Fees", "Paid", False))
+
+        # Rebuild l'embed proprement
+        new_embed = discord.Embed(title=embed.title, description=embed.description, color=embed.color)
+        if embed.author:
+            new_embed.set_author(name=embed.author.name, icon_url=getattr(embed.author, "icon_url", discord.Embed.Empty))
+        if embed.thumbnail:
+            new_embed.set_thumbnail(url=embed.thumbnail.url)
+        if embed.image:
+            new_embed.set_image(url=embed.image.url)
+        if embed.footer:
+            new_embed.set_footer(text=embed.footer.text, icon_url=getattr(embed.footer, "icon_url", discord.Embed.Empty))
+        for name, value, inline in updated_fields:
+            new_embed.add_field(name=name, value=value, inline=inline)
+
+        # Mettre le bouton en vert et le désactiver
+        button.style = discord.ButtonStyle.success
+        button.disabled = True
+
+        await msg.edit(embed=new_embed, view=self)
         await interaction.response.send_message("Marked as fees paid.", ephemeral=True)
 
 
-# --- Modal pour raison facultative ---
+# --- Modal pour raison facultative (Accept / Deny) ---
 class ReasonModal(discord.ui.Modal):
-    def __init__(self, bot, auction_id: int, action: str):
+    def __init__(self, bot, auction_id: int, action: str, message: discord.Message):
         super().__init__(title=f"{action} Auction")
         self.bot = bot
         self.auction_id = auction_id
         self.action = action
-        self.reason = discord.ui.TextInput(label="Reason (optional)", required=False, style=discord.TextStyle.paragraph)
+        self.message = message
+        self.reason = discord.ui.TextInput(
+            label="Reason (optional)",
+            required=False,
+            style=discord.TextStyle.paragraph
+        )
         self.add_item(self.reason)
 
     async def on_submit(self, interaction: discord.Interaction):
-        reason = self.reason.value or "No reason provided."
+        reason = (self.reason.value or "No reason provided.").strip()
+        log_channel = interaction.guild.get_channel(LOG_CHANNEL_ID)
+
+        # Charger l'embed du message original
+        if not self.message.embeds:
+            return await interaction.response.send_message("No embed to update.", ephemeral=True)
+        embed = self.message.embeds[0]
+
         if self.action == "ACCEPT":
             await self.bot.pg.execute("UPDATE auctions SET status='READY' WHERE id=$1", self.auction_id)
-            await interaction.response.send_message(f"Auction #{self.auction_id} accepted ✅\nReason: {reason}", ephemeral=True)
+            # Modifier l'embed
+            new_embed = discord.Embed(
+                title=embed.title,
+                description=f"✅ Submission approved\nReason: {reason}",
+                color=discord.Color.green()
+            )
+            # Copie des champs existants
+            for f in embed.fields:
+                # On peut garder les champs Seller, Currency, etc.
+                new_embed.add_field(name=f.name, value=f.value, inline=f.inline)
+            # Image / footer / thumbnail
+            if embed.image:
+                new_embed.set_image(url=embed.image.url)
+            if embed.thumbnail:
+                new_embed.set_thumbnail(url=embed.thumbnail.url)
+            if embed.footer:
+                new_embed.set_footer(text=embed.footer.text)
+
+            # Supprimer les boutons (view=None)
+            await self.message.edit(embed=new_embed, view=None)
+            await interaction.response.send_message(f"Auction #{self.auction_id} approved.", ephemeral=True)
+
+            # Log
+            if log_channel:
+                log_embed = discord.Embed(
+                    title="✅ Auction approved",
+                    description=f"Auction #{self.auction_id} approved by {interaction.user.mention}",
+                    color=discord.Color.green()
+                )
+                log_embed.add_field(name="Reason", value=reason, inline=False)
+                await log_channel.send(embed=log_embed)
+
         elif self.action == "DENY":
             await self.bot.pg.execute("UPDATE auctions SET status='DENIED' WHERE id=$1", self.auction_id)
-            await interaction.response.send_message(f"Auction #{self.auction_id} denied ❌\nReason: {reason}", ephemeral=True)
+
+            new_embed = discord.Embed(
+                title=embed.title,
+                description=f"❌ Submission denied\nReason: {reason}",
+                color=discord.Color.red()
+            )
+            for f in embed.fields:
+                new_embed.add_field(name=f.name, value=f.value, inline=f.inline)
+            if embed.image:
+                new_embed.set_image(url=embed.image.url)
+            if embed.thumbnail:
+                new_embed.set_thumbnail(url=embed.thumbnail.url)
+            if embed.footer:
+                new_embed.set_footer(text=embed.footer.text)
+
+            await self.message.edit(embed=new_embed, view=None)
+            await interaction.response.send_message(f"Auction #{self.auction_id} denied.", ephemeral=True)
+
+            if log_channel:
+                log_embed = discord.Embed(
+                    title="❌ Auction denied",
+                    description=f"Auction #{self.auction_id} denied by {interaction.user.mention}",
+                    color=discord.Color.red()
+                )
+                log_embed.add_field(name="Reason", value=reason, inline=False)
+                await log_channel.send(embed=log_embed)
 
 
 async def setup(bot: commands.Bot):
