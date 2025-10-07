@@ -6,12 +6,12 @@ from .utils import redis_json_load, queue_display_to_type
 QUEUE_OPTIONS = [
     discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
     discord.SelectOption(label="Skip queue", value="Skip queue", emoji="⏭️", description="Skip ahead in the queue"),
-    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Custom card by CM"),
+    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Card made by yourself"),
 ]
 
 CURRENCY_OPTIONS = [
-    discord.SelectOption(label="BS", value="BS", emoji="💎", description="Bonus shards"),
-    discord.SelectOption(label="MS", value="MS", emoji="🪙", description="Mana shards"),
+    discord.SelectOption(label="BS", value="BS", emoji="💎", description="Bloodstone"),
+    discord.SelectOption(label="MS", value="MS", emoji="🪙", description="Moonstone"),
     discord.SelectOption(label="BS & MS", value="BS+MS", emoji="⚖️", description="Both currencies, requires rate"),
     discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
 ]
