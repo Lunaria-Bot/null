@@ -24,7 +24,6 @@ def parse_emoji_id_from_text(text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 def parse_version_from_text(text: str) -> Optional[str]:
-    # Title like "Rimuru Tempest v92" OR description **Version:** `92`
     m = re.search(r"\bv(\d+)\b", text or "", flags=re.IGNORECASE)
     if m:
         return m.group(1)
@@ -44,17 +43,14 @@ def parse_owner_id_from_desc(desc: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 def parse_rarity(embed_dict: Dict) -> Optional[str]:
-    # Prefer title emoji ID
     title = embed_dict.get("title") or ""
     eid = parse_emoji_id_from_text(title)
     if eid and eid in RARITY_FROM_EMOJI_ID:
         return RARITY_FROM_EMOJI_ID[eid]
-    # Fallback: scan description for emojis
     desc = embed_dict.get("description") or ""
     eid2 = parse_emoji_id_from_text(desc)
     if eid2 and eid2 in RARITY_FROM_EMOJI_ID:
         return RARITY_FROM_EMOJI_ID[eid2]
-    # Fallback: keywords
     joined = " ".join([
         title.upper(),
         (embed_dict.get("description") or "").upper(),
@@ -108,12 +104,13 @@ class AuctionCore(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot and message.author.id == self.bot.mazoku_bot_id and message.channel.id == self.bot.mazoku_channel_id:
+        # ✅ On écoute le bot Mazoku dans tous les salons
+        if message.author.bot and message.author.id == self.bot.mazoku_bot_id:
             await self._process_mazoku_embed(message)
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if after.author.bot and after.author.id == self.bot.mazoku_bot_id and after.channel.id == self.bot.mazoku_channel_id:
+        if after.author.bot and after.author.id == self.bot.mazoku_bot_id:
             await self._process_mazoku_embed(after)
 
     async def _process_mazoku_embed(self, message: discord.Message):
@@ -129,7 +126,7 @@ class AuctionCore(commands.Cog):
 
         owner_id = parse_owner_id_from_desc(desc)
         if not owner_id:
-            return  # On ne cache que les cartes avec Owner identifiable
+            return
 
         rarity = parse_rarity(data)
         version = parse_version_from_text(title_raw) or parse_version_from_text(desc)
@@ -137,14 +134,14 @@ class AuctionCore(commands.Cog):
         batch = parse_batch_from_desc(desc)
 
         payload = {
-            "title": title_clean,                  # e.g., "Rimuru Tempest v92"
+            "title": title_clean,
             "rarity": rarity or "COMMON",
-            "series": series,                      # e.g., "Tensei Shitara Slime Datta Ken"
-            "version": version,                    # e.g., "92"
-            "batch": batch,                        # e.g., 15
-            "owner_id": owner_id,                  # e.g., 912376040142307419
+            "series": series,
+            "version": version,
+            "batch": batch,
+            "owner_id": owner_id,
             "image_url": image,
-            "raw": data,                           # full embed dict for debug
+            "raw": data,
         }
 
         await self.bot.redis.set(f"mazoku:card:{owner_id}", json.dumps(payload), ex=600)
