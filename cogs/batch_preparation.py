@@ -225,6 +225,104 @@ class BatchPaginationView(discord.ui.View):
         embed = self.build_page()
         await interaction.response.edit_message(embed=embed, view=self)
 
+ # --- Commande admin pour lock les auctions ---
+    @app_commands.command(name="auction-lock", description="Lock all open auction threads (admin).")
+    @app_commands.default_permissions(administrator=True)
+    async def auction_lock(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if not guild:
+            return await interaction.followup.send("❌ Impossible de trouver la guilde.", ephemeral=True)
+
+        log_channel = guild.get_channel(self.bot.log_channel_id)
+        locked_count = 0
+
+        for forum_id in [
+            self.bot.forum_common_id,
+            self.bot.forum_rare_id,
+            self.bot.forum_sr_id,
+            self.bot.forum_ssr_id,
+            self.bot.forum_ur_id,
+            self.bot.forum_cm_id,
+        ]:
+            forum = guild.get_channel(forum_id)
+            if not forum or forum.type != discord.ChannelType.forum:
+                continue
+
+            threads = forum.threads + (await forum.archived_threads(limit=50)).threads
+            for thread in threads:
+                if not thread.locked and not thread.archived:
+                    try:
+                        await thread.edit(archived=True, locked=True)
+                        locked_count += 1
+                        # ✅ Log automatique
+                        if log_channel:
+                            embed = discord.Embed(
+                                title="🔒 Auction locked",
+                                description=f"Thread **{thread.name}** a été verrouillé par `/auction-lock`.",
+                                color=discord.Color.orange()
+                            )
+                            await log_channel.send(embed=embed)
+                        await asyncio.sleep(1)  # ✅ pause pour éviter le rate limit
+                    except Exception as e:
+                        print(f"Erreur lors du lock du thread {thread.id}: {e}")
+
+        await interaction.followup.send(f"✅ {locked_count} threads verrouillés.", ephemeral=True)
+
+    # --- Listener : si le seller écrit 'accept' ou 'accepted', lock le thread ---
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        if not isinstance(message.channel, discord.Thread):
+            return
+
+        # Vérifie si le thread appartient à un forum d'auctions
+        if message.channel.parent_id not in {
+            self.bot.forum_common_id,
+            self.bot.forum_rare_id,
+            self.bot.forum_sr_id,
+            self.bot.forum_ssr_id,
+            self.bot.forum_ur_id,
+            self.bot.forum_cm_id,
+        }:
+            return
+
+        content = message.content.lower().strip()
+        if content not in {"accept", "accepted"}:
+            return
+
+        try:
+            # Récupère le premier message du thread (celui qui contient l'embed)
+            starter = await message.channel.fetch_message(message.channel.id)
+        except Exception:
+            return
+
+        if not starter or not starter.embeds:
+            return
+
+        embed = starter.embeds[0]
+        seller_field = next((f for f in embed.fields if f.name == "Seller"), None)
+
+        if seller_field and seller_field.value == message.author.mention:
+            try:
+                await message.channel.edit(archived=True, locked=True)
+                await message.channel.send("🔒 Thread verrouillé automatiquement après acceptation par le seller.")
+
+                # ✅ Log automatique
+                log_channel = message.guild.get_channel(self.bot.log_channel_id)
+                if log_channel:
+                    log_embed = discord.Embed(
+                        title="🔒 Auction locked by seller",
+                        description=f"Thread **{message.channel.name}** a été verrouillé automatiquement car {message.author.mention} (seller) a écrit `{content}`.",
+                        color=discord.Color.green()
+                    )
+                    await log_channel.send(embed=log_embed)
+
+            except Exception as e:
+                print(f"Erreur lors du lock automatique du thread {message.channel.id}: {e}")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BatchPreparation(bot))
