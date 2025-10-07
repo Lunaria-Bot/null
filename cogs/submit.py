@@ -107,7 +107,7 @@ class CurrencySelect(discord.ui.Select):
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
-        # Stocker la value (ex: "PAYPAL"), pas le label
+        # Stocke la value (ex: "PAYPAL"), pas le label
         self.parent_view.currency = self.values[0]
         await self.parent_view.refresh(interaction, note=f"Currency set: {self.parent_view.currency}")
 
@@ -144,7 +144,7 @@ class ConfigView(discord.ui.View):
 
     async def refresh(self, interaction: discord.Interaction, note: str | None = None):
         qtype = queue_display_to_type(self.queue_display) if self.queue_display else None
-        if qtype == "CM" and self.currency not in {None, "PAYPAL"}:
+        if qtype == "CARD_MAKER" and self.currency not in {None, "PAYPAL"}:
             self.currency = None
             note = (note or "") + "\nCurrency reset. Only PayPal is allowed for Card Maker."
         if qtype in {"NORMAL", "SKIP"} and self.currency not in {None, "BS", "MS", "BS+MS"}:
@@ -185,16 +185,28 @@ class ConfigView(discord.ui.View):
     async def on_submit(self, interaction: discord.Interaction):
         qtype = queue_display_to_type(self.queue_display)
 
-        if qtype == "CM":
-            if self.currency != "PAYPAL":
-                return await interaction.response.send_message("Only PayPal is allowed for Card Maker.", ephemeral=True)
+        # Debug print pour vérifier ce qu'on reçoit
+        print("DEBUG SUBMIT:", qtype, self.currency)
+
+        if qtype == "CARD_MAKER":
+            if str(self.currency).upper() != "PAYPAL":
+                return await interaction.response.send_message(
+                    f"Only PayPal is allowed for Card Maker. (got {self.currency})",
+                    ephemeral=True
+                )
         else:
             if self.currency not in {"BS", "MS", "BS+MS"}:
-                return await interaction.response.send_message("Use BS, MS or BS & MS for Normal/Skip.", ephemeral=True)
+                return await interaction.response.send_message(
+                    "Use BS, MS or BS & MS for Normal/Skip.",
+                    ephemeral=True
+                )
 
-        rate_value = self.rate if self.rate else ("N/A" if self.currency in {"BS", "MS", "PAYPAL"} else None)
+        rate_value = self.rate if self.rate else ("N/A" if str(self.currency).upper() in {"BS", "MS", "PAYPAL"} else None)
         if self.currency == "BS+MS" and not rate_value:
-            return await interaction.response.send_message("Rate is required when choosing BS & MS.", ephemeral=True)
+            return await interaction.response.send_message(
+                "Rate is required when choosing BS & MS.",
+                ephemeral=True
+            )
 
         rec = await self.bot.pg.fetchrow("""
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
