@@ -10,8 +10,8 @@ QUEUE_OPTIONS = [
 ]
 
 CURRENCY_OPTIONS = [
-    discord.SelectOption(label="BS", value="BS", emoji="🪙", description="Bloodstone"),
-    discord.SelectOption(label="MS", value="MS", emoji="💎", description="Moonstone"),
+    discord.SelectOption(label="BS", value="BS", emoji="💎", description="Bonus shards"),
+    discord.SelectOption(label="MS", value="MS", emoji="🪙", description="Mana shards"),
     discord.SelectOption(label="BS & MS", value="BS+MS", emoji="⚖️", description="Both currencies, requires rate"),
     discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
 ]
@@ -21,12 +21,11 @@ def make_progress_footer(queue: str | None, currency: str | None, rate: str | No
     total = 3
     if queue: done += 1
     if currency: done += 1
-    # Le rate ne compte que pour BS+MS
     if currency == "BS+MS":
         if rate:
             done += 1
     else:
-        done += 1  # étape "rate" est considérée comme non requise pour les autres currencies
+        done += 1
     return f"Setup progress: {done}/{total}"
 
 def build_preview_embed(user_id: int, data: dict, queue_display: str | None, currency: str | None, rate: str | None) -> discord.Embed:
@@ -156,7 +155,7 @@ class ConfigView(discord.ui.View):
             self.rate_button.disabled = False
         else:
             self.rate_button.disabled = True
-            self.rate = None  # reset si inutile
+            self.rate = None
 
         ready = self.is_ready()
         self.submit_button.disabled = not ready
@@ -199,7 +198,7 @@ class ConfigView(discord.ui.View):
         rec = await self.bot.pg.fetchrow("""
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11)
-            RETURNING id
+            RETURNING *
         """,
         self.user_id,
         self.data.get("series"),
@@ -213,28 +212,25 @@ class ConfigView(discord.ui.View):
         self.data.get("title"),
         self.data.get("image_url"))
 
+        # Log la soumission dans le canal de queue
+        staff_cog = self.bot.get_cog("StaffReview")
+        if staff_cog and hasattr(staff_cog, "log_submission"):
+            await staff_cog.log_submission(rec)
+
         confirm = discord.Embed(
             title=f"Auction #{rec['id']} submitted",
-            description="Your auction is now pending staff review.",
+            description="Your auction was logged for staff review.",
             color=discord.Color.green()
         )
         confirm.add_field(name="Queue", value=self.queue_display, inline=True)
         confirm.add_field(name="Currency", value=self.currency, inline=True)
         confirm.add_field(name="Rate", value=rate_value if rate_value else "—", inline=True)
-        confirm.set_footer(text="Thank you! You’ll receive a DM after review.")
-
-        fee_msg = None
-        if self.queue_display == "Normal queue":
-            fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nNormal Queue: 500bs"
-        elif self.queue_display == "Skip queue":
-            fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nSkip Queue: 2000bs"
-        elif self.queue_display == "Card Maker":
-            fee_msg = "⚠️ Card Maker queue selected.\nPThank you for submitting your card in Lilac."
+        confirm.set_footer(text="You will be notified after staff decision.")
 
         try:
-            await interaction.response.edit_message(content=fee_msg, embed=confirm, view=None)
+            await interaction.response.edit_message(content=None, embed=confirm, view=None)
         except discord.InteractionResponded:
-            await interaction.followup.send(content=fee_msg, embed=confirm, view=None)
+            await interaction.followup.send(embed=confirm, view=None)
         self.stop()
 
     async def on_cancel(self, interaction: discord.Interaction):
@@ -256,7 +252,7 @@ class RateModal(discord.ui.Modal, title="Set rate"):
         self.parent_view = parent_view
         self.input = discord.ui.TextInput(
             label="Rate",
-            placeholder="Ex: 200:1 (only for BS+MS)",
+            placeholder="Ex: 200:1 (required only for BS+MS)",
             required=False,
             max_length=50
         )
