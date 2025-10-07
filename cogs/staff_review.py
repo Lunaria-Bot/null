@@ -2,14 +2,22 @@ import discord
 from discord.ext import commands
 from discord import app_commands, ui
 
+# IDs des canaux de log par queue
+QUEUE_CHANNELS = {
+    "NORMAL": 1304100031388844114,
+    "SKIP": 1308385490931810434,
+    "CM": 1395404596230361209,
+}
+
 class StaffReview(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # Cette commande n’est plus vraiment utile, mais on peut la garder pour debug
     @app_commands.command(name="auction-list", description="List auctions pending review.")
     async def auction_list(self, interaction: discord.Interaction):
         rows = await self.bot.pg.fetch("""
-            SELECT id, user_id, rarity, queue_type, currency, rate, series, version, title, image_url
+            SELECT id, user_id, rarity, queue_type, currency, rate, series, version, title, image_url, status
             FROM auctions WHERE status='PENDING' ORDER BY id ASC
         """)
         if not rows:
@@ -21,168 +29,83 @@ class StaffReview(commands.Cog):
             name = r["title"] or f"{r['series']} v{r['version']}"
             embed.add_field(
                 name=f"#{r['id']} — {name}",
-                value=f"User: <@{r['user_id']}> | {r['rarity']} | {r['queue_type']} | {r['currency']} | {r['rate']}",
+                value=f"User: <@{r['user_id']}> | {r['rarity']} | {r['queue_type']} | {r['currency']} | {r['rate']} | Status: {r['status']}",
                 inline=False
             )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="auction-review", description="Open staff review controls.")
-    @app_commands.default_permissions(manage_messages=True)
-    async def auction_review(self, interaction: discord.Interaction):
-        rows = await self.bot.pg.fetch("""
-            SELECT id, user_id, rarity, queue_type, currency, rate, series, version, title, image_url
-            FROM auctions WHERE status='PENDING' ORDER BY id ASC
-        """)
-        if not rows:
-            return await interaction.response.send_message("Nothing to review.", ephemeral=True)
+    async def log_submission(self, auction: dict):
+        """Appelé depuis submit.py pour log la soumission dans le bon canal"""
+        qtype = auction["queue_type"]
+        channel_id = QUEUE_CHANNELS.get(qtype)
+        if not channel_id:
+            return
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            return
 
-        if len(rows) == 1:
-            row = rows[0]
-            embed, view = build_review_embed_and_view(self.bot, row)
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        else:
-            view = AuctionSelectView(self.bot, rows)
-            await interaction.response.send_message("Select an auction to review:", view=view, ephemeral=True)
+        embed = discord.Embed(
+            title=f"Auction #{auction['id']} submitted",
+            description="Pending review",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="Seller", value=f"<@{auction['user_id']}>", inline=True)
+        embed.add_field(name="Rarity", value=auction["rarity"], inline=True)
+        embed.add_field(name="Queue", value=auction["queue_type"], inline=True)
+        embed.add_field(name="Currency", value=auction["currency"], inline=True)
+        embed.add_field(name="Rate", value=auction["rate"] or "—", inline=True)
+        embed.add_field(name="Version", value=auction["version"] or "?", inline=True)
+        if auction["image_url"]:
+            embed.set_image(url=auction["image_url"])
 
-
-# --- Construction de l’embed + boutons ---
-def build_review_embed_and_view(bot, row):
-    embed = discord.Embed(
-        title=row["title"] or f"Auction #{row['id']}",
-        description="Review Auction",
-        color=discord.Color.orange()
-    )
-    embed.add_field(name="Seller", value=f"<@{row['user_id']}>", inline=True)
-    embed.add_field(name="Rarity", value=row["rarity"], inline=True)
-    embed.add_field(name="Queue", value=row["queue_type"], inline=True)
-    embed.add_field(name="Preference", value=row["currency"], inline=True)
-    embed.add_field(name="Rate", value=row["rate"], inline=True)
-    embed.add_field(name="Version", value=row["version"] or "?", inline=True)
-    if row["image_url"]:
-        embed.set_image(url=row["image_url"])
-
-    view = ReviewView(bot, row["id"], row["user_id"])
-    return embed, view
+        view = ReviewButtons(self.bot, auction["id"])
+        await channel.send(embed=embed, view=view)
 
 
-# --- Menu Select ---
-class AuctionSelect(ui.Select):
-    def __init__(self, bot, auctions):
-        self.bot = bot
-        options = []
-        for a in auctions:
-            label = a["title"] or f"{a['series']} v{a['version']}"
-            desc = f"{a['rarity']} | {a['queue_type']}"
-            options.append(discord.SelectOption(
-                label=label[:100],
-                description=desc[:100],
-                value=str(a["id"])
-            ))
-        super().__init__(placeholder="Choose an auction to review...", options=options, min_values=1, max_values=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        auction_id = int(self.values[0])
-        row = await self.bot.pg.fetchrow("SELECT * FROM auctions WHERE id=$1", auction_id)
-        if not row:
-            return await interaction.response.send_message("❌ Auction not found.", ephemeral=True)
-
-        embed, view = build_review_embed_and_view(self.bot, row)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-
-class AuctionSelectView(ui.View):
-    def __init__(self, bot, auctions):
-        super().__init__(timeout=60)
-        self.add_item(AuctionSelect(bot, auctions))
-
-
-# --- Boutons Accept / Deny ---
-class ReviewView(discord.ui.View):
-    def __init__(self, bot, auction_id: int, user_id: int):
-        super().__init__(timeout=600)
+# --- Boutons Accept / Deny / Fee Paid ---
+class ReviewButtons(discord.ui.View):
+    def __init__(self, bot, auction_id: int):
+        super().__init__(timeout=None)
         self.bot = bot
         self.auction_id = auction_id
-        self.user_id = user_id
 
     @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.bot.pg.execute(
-            "INSERT INTO reviews (auction_id, stage, reviewer_id, decision) VALUES ($1,$2,$3,$4)",
-            self.auction_id, 1, interaction.user.id, "accept"
-        )
-        await self.bot.pg.execute("UPDATE auctions SET status='READY' WHERE id=$1", self.auction_id)
-        await interaction.response.send_message(f"Auction #{self.auction_id} accepted.", ephemeral=True)
-
-        # Log accept
-        await self.log_action("Auction accepted", discord.Color.green())
-
-        try:
-            user = await self.bot.fetch_user(self.user_id)
-            await user.send("✅ Your card has been accepted and moved to the waiting list.")
-        except Exception:
-            pass
-        self.stop()
+        modal = ReasonModal(self.bot, self.auction_id, "ACCEPT")
+        await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ReasonModal(self.bot, self.auction_id, self.user_id)
+        modal = ReasonModal(self.bot, self.auction_id, "DENY")
         await interaction.response.send_modal(modal)
-        self.stop()
 
-    async def log_action(self, title: str, color: discord.Color, reason: str = None):
-        auction = await self.bot.pg.fetchrow("SELECT * FROM auctions WHERE id=$1", self.auction_id)
-        if not auction:
-            return
-        guild = self.bot.get_guild(self.bot.guild_id)
-        log_channel = guild.get_channel(self.bot.log_channel_id) if guild else None
-        if not log_channel:
-            return
-
-        embed = discord.Embed(title=title, color=color)
-        if reason:
-            embed.description = f"Reason: {reason}"
-        embed.add_field(name="Name of the card", value=auction["title"] or f"Auction #{auction['id']}", inline=True)
-        embed.add_field(name="Version", value=auction.get("version") or "?", inline=True)
-        embed.add_field(name="Queue", value=auction.get("queue_type") or "?", inline=True)
-        embed.add_field(name="Seller", value=f"<@{auction['user_id']}>", inline=True)
-        embed.add_field(name="Rarity", value=auction.get("rarity") or "?", inline=True)
-        embed.add_field(name="Currency", value=auction.get("currency") or "N/A", inline=True)
-        embed.add_field(name="Rate", value=auction.get("rate") or "N/A", inline=True)
-        if auction.get("image_url"):
-            embed.set_image(url=auction["image_url"])
-        await log_channel.send(embed=embed)
+    @discord.ui.button(label="💰 Fee paid", style=discord.ButtonStyle.secondary)
+    async def fee_paid(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg = interaction.message
+        embed = msg.embeds[0]
+        embed.add_field(name="Fees", value="Paid", inline=False)
+        await msg.edit(embed=embed, view=self)
+        await interaction.response.send_message("Marked as fees paid.", ephemeral=True)
 
 
-# --- Modal pour raison du refus ---
-class ReasonModal(discord.ui.Modal, title="Reason"):
-    def __init__(self, bot, auction_id: int, user_id: int):
-        super().__init__(title="Reason")
+# --- Modal pour raison facultative ---
+class ReasonModal(discord.ui.Modal):
+    def __init__(self, bot, auction_id: int, action: str):
+        super().__init__(title=f"{action} Auction")
         self.bot = bot
         self.auction_id = auction_id
-        self.user_id = user_id
-        self.input = discord.ui.TextInput(label="Enter reason", required=False, max_length=200)
-        self.add_item(self.input)
+        self.action = action
+        self.reason = discord.ui.TextInput(label="Reason (optional)", required=False, style=discord.TextStyle.paragraph)
+        self.add_item(self.reason)
 
     async def on_submit(self, interaction: discord.Interaction):
-        reason = str(self.input.value).strip() or "No reason provided."
-        await self.bot.pg.execute(
-            "INSERT INTO reviews (auction_id, stage, reviewer_id, decision, reason) VALUES ($1,$2,$3,$4,$5)",
-            self.auction_id, 1, interaction.user.id, "deny", reason
-        )
-        await self.bot.pg.execute("UPDATE auctions SET status='DENIED' WHERE id=$1", self.auction_id)
-        await interaction.response.send_message(f"Auction #{self.auction_id} denied.", ephemeral=True)
-
-        # Log deny
-        view = ReviewView(self.bot, self.auction_id, self.user_id)
-        await view.log_action("Auction denied", discord.Color.red(), reason)
-
-        # DM au vendeur
-        try:
-            user = await self.bot.fetch_user(self.user_id)
-            await user.send(f"❌ Your card has been refused.\nReason: {reason}")
-        except Exception:
-            pass
-        self.stop()
+        reason = self.reason.value or "No reason provided."
+        if self.action == "ACCEPT":
+            await self.bot.pg.execute("UPDATE auctions SET status='READY' WHERE id=$1", self.auction_id)
+            await interaction.response.send_message(f"Auction #{self.auction_id} accepted ✅\nReason: {reason}", ephemeral=True)
+        elif self.action == "DENY":
+            await self.bot.pg.execute("UPDATE auctions SET status='DENIED' WHERE id=$1", self.auction_id)
+            await interaction.response.send_message(f"Auction #{self.auction_id} denied ❌\nReason: {reason}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
