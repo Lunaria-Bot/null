@@ -7,6 +7,15 @@ from .utils import rarity_to_forum_id
 
 CEST = ZoneInfo("Europe/Paris")
 
+# Custom rarity emojis
+RARITY_EMOJIS = {
+    "COMMON": "<a:Common:1342208021853634781>",
+    "RARE": "<a:Rare:1342208028342091857>",
+    "SR": "<a:SuperRare:1342208034482425936>",
+    "SSR": "<a:SSR_GG:1343741800321384521>",
+    "UR": "<a:UltraRare:1342208044351623199>",
+}
+
 class Scheduler(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -75,18 +84,21 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
 
+            # Resolve name and rarity emoji
             card_name = it["title"] or (
                 f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}"
             )
+            rarity = (it.get("rarity") or "COMMON").upper()
+            emoji = RARITY_EMOJIS.get(rarity, "")
 
             # Visual embed for the thread
             embed = discord.Embed(
-                title=card_name,
+                title=f"{emoji} {card_name}" if emoji else card_name,
                 description=f"Auction posted by <@{it['user_id']}>",
                 color=discord.Color.blurple()
             )
             embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=True)
-            embed.add_field(name="Rarity", value=it.get("rarity") or "?", inline=True)
+            embed.add_field(name="Rarity", value=f"{emoji} {rarity}" if emoji else (it.get("rarity") or "?"), inline=True)
             embed.add_field(name="Preference", value=it.get("currency") or "N/A", inline=True)
             embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
             embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
@@ -96,13 +108,13 @@ class Scheduler(commands.Cog):
             try:
                 # create_thread returns ThreadWithMessage in discord.py 2.x
                 thread_with_msg = await forum.create_thread(
-                    name=card_name,
+                    name=card_name,  # keep thread name clean; emoji is in the embed
                     content=None,
                     embed=embed
                 )
                 thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
-                posted_links.append((card_name, link))
+                posted_links.append((emoji, card_name, link))
 
                 # Mark auction as posted
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
@@ -114,11 +126,11 @@ class Scheduler(commands.Cog):
                         title="Auction posted",
                         color=discord.Color.blue()
                     )
-                    log_embed.add_field(name="Name of the card", value=card_name, inline=True)
+                    log_embed.add_field(name="Name of the card", value=(f"{emoji} {card_name}" if emoji else card_name), inline=True)
                     log_embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
                     log_embed.add_field(name="Queue", value=it.get("queue_type") or "?", inline=True)
                     log_embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=True)
-                    log_embed.add_field(name="Rarity", value=it.get("rarity") or "?", inline=True)
+                    log_embed.add_field(name="Rarity", value=f"{emoji} {rarity}" if emoji else (it.get("rarity") or "?"), inline=True)
                     log_embed.add_field(name="Currency", value=it.get("currency") or "N/A", inline=True)
                     log_embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
                     if it.get("image_url"):
@@ -131,10 +143,13 @@ class Scheduler(commands.Cog):
         # Delete the batch after posting (batch_items are removed via ON DELETE CASCADE)
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
-        # Summary ping with links
+        # Summary ping with links (include emoji before the title if available)
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
         if posted_links and ping_channel:
-            lines = [f"[{title}]({link})" for title, link in posted_links]
+            lines = [
+                f"{em or ''} [{title}]({link})".strip()
+                for em, title, link in posted_links
+            ]
             await ping_channel.send("Today's auctions:\n" + "\n".join(lines))
 
     # --- Debug command to force posting ---
