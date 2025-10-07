@@ -6,7 +6,7 @@ from .utils import redis_json_load, queue_display_to_type
 QUEUE_OPTIONS = [
     discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
     discord.SelectOption(label="Skip queue", value="Skip queue", emoji="⏭️", description="Skip ahead in the queue"),
-    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Card made by yourself"),
+    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Custom card by CM"),
 ]
 
 CURRENCY_OPTIONS = [
@@ -107,6 +107,7 @@ class CurrencySelect(discord.ui.Select):
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
+        # Stocker la value (ex: "PAYPAL"), pas le label
         self.parent_view.currency = self.values[0]
         await self.parent_view.refresh(interaction, note=f"Currency set: {self.parent_view.currency}")
 
@@ -183,6 +184,7 @@ class ConfigView(discord.ui.View):
 
     async def on_submit(self, interaction: discord.Interaction):
         qtype = queue_display_to_type(self.queue_display)
+
         if qtype == "CM":
             if self.currency != "PAYPAL":
                 return await interaction.response.send_message("Only PayPal is allowed for Card Maker.", ephemeral=True)
@@ -211,7 +213,7 @@ class ConfigView(discord.ui.View):
         self.data.get("title"),
         self.data.get("image_url"))
 
-        # Log la soumission dans le canal de queue
+        # Log la soumission dans le canal de queue (StaffReview.log_submission)
         staff_cog = self.bot.get_cog("StaffReview")
         if staff_cog and hasattr(staff_cog, "log_submission"):
             await staff_cog.log_submission(rec)
