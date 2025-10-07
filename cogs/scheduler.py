@@ -79,23 +79,27 @@ class Scheduler(commands.Cog):
                 f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}"
             )
 
-            # Visual embed for the thread
+            # Visual embed pour le thread (version épurée)
             embed = discord.Embed(
                 title=card_name,
-                description=f"Auction posted by <@{it['user_id']}>",
                 color=discord.Color.blurple()
             )
-            embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=True)
+            # Garder le Seller, mais retirer "Auction posted by ..."
+            embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=False)
+            # Garder Rarity, Preference (currency), Version
             embed.add_field(name="Rarity", value=it.get("rarity") or "?", inline=True)
-            embed.add_field(name="Queue", value=it.get("queue_type") or "?", inline=True)
             embed.add_field(name="Preference", value=it.get("currency") or "N/A", inline=True)
-            embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
             embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
+            # N'afficher le Rate que s'il est renseigné et différent de "N/A"
+            rate_val = it.get("rate")
+            if rate_val and str(rate_val).strip().upper() != "N/A":
+                embed.add_field(name="Rate", value=rate_val, inline=True)
+
             if it.get("image_url"):
                 embed.set_image(url=it["image_url"])
 
             try:
-                # create_thread returns ThreadWithMessage in discord.py 2.x
+                # create_thread retourne ThreadWithMessage en discord.py 2.x
                 thread_with_msg = await forum.create_thread(
                     name=card_name,
                     content=None,
@@ -105,10 +109,10 @@ class Scheduler(commands.Cog):
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
                 posted_links.append((card_name, link))
 
-                # Mark auction as posted
+                # Marquer l'auction comme postée
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
 
-                # Log "Auction posted" to the log channel
+                # Log "Auction posted" dans le channel de log (on garde ce log complet)
                 log_channel = guild.get_channel(self.bot.log_channel_id)
                 if log_channel:
                     log_embed = discord.Embed(
@@ -129,10 +133,10 @@ class Scheduler(commands.Cog):
             except Exception as e:
                 print("Error creating thread:", e)
 
-        # Delete the batch after posting (batch_items are removed via ON DELETE CASCADE)
+        # Supprimer le batch après le post (batch_items supprimés via ON DELETE CASCADE)
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
-        # Summary ping with links
+        # Résumé avec liens
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
         if posted_links and ping_channel:
             lines = [f"[{title}]({link})" for title, link in posted_links]
