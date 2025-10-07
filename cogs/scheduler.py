@@ -87,7 +87,6 @@ class Scheduler(commands.Cog):
             )
             embed.add_field(name="Seller", value=f"<@{it['user_id']}>", inline=True)
             embed.add_field(name="Rarity", value=it.get("rarity") or "?", inline=True)
-            embed.add_field(name="Queue", value=it.get("queue_type") or "?", inline=True)
             embed.add_field(name="Preference", value=it.get("currency") or "N/A", inline=True)
             embed.add_field(name="Rate", value=it.get("rate") or "N/A", inline=True)
             embed.add_field(name="Version", value=it.get("version") or "?", inline=True)
