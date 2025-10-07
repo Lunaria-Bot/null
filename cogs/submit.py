@@ -6,12 +6,12 @@ from .utils import redis_json_load, queue_display_to_type
 QUEUE_OPTIONS = [
     discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
     discord.SelectOption(label="Skip queue", value="Skip queue", emoji="⏭️", description="Skip ahead in the queue"),
-    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Card made by yourself"),
+    discord.SelectOption(label="Card Maker", value="Card Maker", emoji="🛠️", description="Custom card by CM"),
 ]
 
 CURRENCY_OPTIONS = [
-    discord.SelectOption(label="BS", value="BS", emoji="💎", description="Bloodstone"),
-    discord.SelectOption(label="MS", value="MS", emoji="🪙", description="Moonstone"),
+    discord.SelectOption(label="BS", value="BS", emoji="💎", description="Bonus shards"),
+    discord.SelectOption(label="MS", value="MS", emoji="🪙", description="Mana shards"),
     discord.SelectOption(label="BS & MS", value="BS+MS", emoji="⚖️", description="Both currencies, requires rate"),
     discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
 ]
@@ -150,7 +150,6 @@ class ConfigView(discord.ui.View):
             self.currency = None
             note = (note or "") + "\nCurrency reset. Use BS, MS or BS & MS for Normal/Skip."
 
-        # Désactiver le bouton "Set rate" sauf si la currency est BS+MS
         if self.currency == "BS+MS":
             self.rate_button.disabled = False
         else:
@@ -217,6 +216,24 @@ class ConfigView(discord.ui.View):
         if staff_cog and hasattr(staff_cog, "log_submission"):
             await staff_cog.log_submission(rec)
 
+        # Message de rappel pour les fees / CM
+        fee_msg = None
+        if self.queue_display == "Normal queue":
+            fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nNormal Queue: 500bs"
+        elif self.queue_display == "Skip queue":
+            fee_msg = "💰 Do not forget to pay fees à <@723441401211256842>\nSkip Queue: 2000bs"
+        elif self.queue_display == "Card Maker":
+            fee_msg = "⚠️ Card Maker queue selected.\nThank you for selecting Lilac to submit your card !"
+
+        if fee_msg:
+            try:
+                await interaction.user.send(fee_msg)
+            except discord.Forbidden:
+                try:
+                    await interaction.followup.send(fee_msg, ephemeral=True)
+                except discord.HTTPException:
+                    pass
+
         confirm = discord.Embed(
             title=f"Auction #{rec['id']} submitted",
             description="Your auction was logged for staff review.",
@@ -225,6 +242,8 @@ class ConfigView(discord.ui.View):
         confirm.add_field(name="Queue", value=self.queue_display, inline=True)
         confirm.add_field(name="Currency", value=self.currency, inline=True)
         confirm.add_field(name="Rate", value=rate_value if rate_value else "—", inline=True)
+        if rec.get("image_url"):
+            confirm.set_thumbnail(url=rec["image_url"])
         confirm.set_footer(text="You will be notified after staff decision.")
 
         try:
