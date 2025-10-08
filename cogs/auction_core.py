@@ -61,6 +61,33 @@ def parse_rarity(embed_dict: Dict) -> Optional[str]:
             return key
     return None
 
+# --- NEW: parseur Event / Special ---
+def parse_event_or_special(embed_dict: Dict) -> Dict[str, Optional[str]]:
+    title = (embed_dict.get("title") or "").lower()
+    desc = (embed_dict.get("description") or "").lower()
+    footer = ((embed_dict.get("footer") or {}).get("text") or "").lower()
+    text = " ".join([title, desc, footer])
+
+    event_icon = None
+    special_icon = None
+
+    # 🔹 Event
+    if "🔹" in (embed_dict.get("title") or "") or "🔹" in (embed_dict.get("description") or "") or "🔹" in footer:
+        if "christmas" in text:
+            event_icon = "🎄"
+        elif "halloween" in text:
+            event_icon = "🎃"
+        elif "maid" in text:
+            event_icon = "<:maidbow:1399426280549777439>"
+        elif "summer" in text:
+            event_icon = "🏖️"
+
+    # 🔸 Special
+    if "🔸" in (embed_dict.get("title") or "") or "🔸" in (embed_dict.get("description") or "") or "🔸" in footer:
+        if "special" in text:
+            special_icon = "✨"
+
+    return {"event": event_icon, "special": special_icon}
 # --- Log utilitaire quand une carte entre en waiting list (READY) ---
 async def log_card_ready(bot: commands.Bot, auction: Dict):
     guild = bot.get_guild(bot.guild_id)
@@ -85,6 +112,10 @@ async def log_card_ready(bot: commands.Bot, auction: Dict):
     embed.add_field(name="Rarity", value=auction.get("rarity") or "?", inline=True)
     embed.add_field(name="Currency", value=auction.get("currency") or "N/A", inline=True)
     embed.add_field(name="Rate", value=auction.get("rate") or "N/A", inline=True)
+    if auction.get("event"):
+        embed.add_field(name="Event", value=auction["event"], inline=True)
+    if auction.get("special"):
+        embed.add_field(name="Special", value=auction["special"], inline=True)
     if auction.get("image_url"):
         embed.set_image(url=auction["image_url"])
 
@@ -104,7 +135,6 @@ class AuctionCore(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # ✅ On écoute le bot Mazoku dans tous les salons
         if message.author.bot and message.author.id == self.bot.mazoku_bot_id:
             await self._process_mazoku_embed(message)
 
@@ -133,6 +163,9 @@ class AuctionCore(commands.Cog):
         series = parse_series_from_desc(desc)
         batch = parse_batch_from_desc(desc)
 
+        # --- NEW: detect event/special
+        event_info = parse_event_or_special(data)
+
         payload = {
             "title": title_clean,
             "rarity": rarity or "COMMON",
@@ -142,11 +175,12 @@ class AuctionCore(commands.Cog):
             "owner_id": owner_id,
             "image_url": image,
             "raw": data,
+            "event": event_info.get("event"),
+            "special": event_info.get("special"),
         }
 
         await self.bot.redis.set(f"mazoku:card:{owner_id}", json.dumps(payload), ex=600)
 
-    # --- Commande admin pour forcer READY + log ---
     @app_commands.command(name="auction-force-ready", description="Force an auction to READY and log it (admin).")
     @app_commands.default_permissions(administrator=True)
     async def auction_force_ready(self, interaction: discord.Interaction, auction_id: int):
@@ -157,6 +191,7 @@ class AuctionCore(commands.Cog):
         else:
             await interaction.followup.send(f"❌ Auction #{auction_id} not found.", ephemeral=True)
 
+# --- Initialisation DB ---
 async def init_db(pool):
     await pool.execute("""
     CREATE TABLE IF NOT EXISTS auctions (
@@ -173,7 +208,9 @@ async def init_db(pool):
         status TEXT DEFAULT 'PENDING',
         created_at TIMESTAMPTZ DEFAULT NOW(),
         title TEXT,
-        image_url TEXT
+        image_url TEXT,
+        event TEXT,
+        special TEXT
     );
     CREATE TABLE IF NOT EXISTS batches (
         id SERIAL PRIMARY KEY,
