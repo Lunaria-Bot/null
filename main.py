@@ -70,17 +70,39 @@ class AuctionBot(commands.Bot):
 
 bot = AuctionBot()
 
-@bot.tree.command(name="sync", description="Force resync of slash commands")
+# --- Commande sync locale (guild only) ---
+@bot.tree.command(name="sync", description="Force resync of slash commands (guild only)")
 @commands.has_permissions(administrator=True)
 async def sync_cmd(interaction: discord.Interaction):
-    # Defer immediately to avoid interaction timeout
     await interaction.response.defer(ephemeral=True)
-
     guild = discord.Object(id=interaction.guild_id)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
+    await interaction.followup.send(f"✅ Synced {len(synced)} commands to this guild.")
 
-    await interaction.followup.send(f"Synced {len(synced)} commands.")
+# --- Commande sync globale ---
+@bot.tree.command(name="sync-global", description="Force resync of slash commands globally")
+@commands.has_permissions(administrator=True)
+async def sync_global_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    synced = await bot.tree.sync()  # global sync
+    await interaction.followup.send(f"🌍 Synced {len(synced)} commands globally. (May take ~1h to propagate)")
+
+# --- Login console ---
+@bot.event
+async def on_ready():
+    banner = r"""
+     █████╗ ██╗   ██╗ ██████╗████████╗██╗   ██╗ ██████╗ ███╗   ██╗
+    ██╔══██╗██║   ██║██╔════╝╚══██╔══╝██║   ██║██╔═══██╗████╗  ██║
+    ███████║██║   ██║██║        ██║   ██║   ██║██║   ██║██╔██╗ ██║
+    ██╔══██║██║   ██║██║        ██║   ██║   ██║██║   ██║██║╚██╗██║
+    ██║  ██║╚██████╔╝╚██████╗   ██║   ╚██████╔╝╚██████╔╝██║ ╚████║
+    ╚═╝  ╚═╝ ╚═════╝  ╚═════╝   ╚═╝    ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝
+    """
+    print(banner)
+    print(f"🤖 Logged in as: {bot.user} (ID: {bot.user.id})")
+    print(f"🏠 Connected to guild: {bot.get_guild(bot.guild_id)}")
+    print("✅ Bot is ready and running!")
 
 def main():
     bot.run(os.getenv("DISCORD_TOKEN"))
