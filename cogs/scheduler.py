@@ -12,24 +12,38 @@ RARITY_EMOJIS = {
     "COMMON": "<a:Common:1342208021853634781>",
     "RARE": "<a:Rare:1342208028342091857>",
     "SR": "<a:SuperRare:1342208034482425936>",
-    "SSR": "<a:SuperSuperRare:1342208039918370857>",
+    "SSR": "<a:SSR_GG:1343741800321384521>",
     "UR": "<a:UltraRare:1342208044351623199>",
 }
 
 PING_ROLE_ID = 1303005123622207559
 
-async def post_ping_message(channel: discord.TextChannel, auction_number: int, daily_index: int, card_name: str, version: str, event_icon: str, thread_link: str):
-    # En-tête avec ping du rôle, numéro du jour et ID DB
-    lines = [f"<@&{PING_ROLE_ID}> #{daily_index} (Auction ID: {auction_number})"]
 
-    # Section CM
-    base_line = f"[{card_name} v{version} {event_icon or ''}]({thread_link})".strip()
-    lines.append("# CM")
-    lines.append(base_line)
+async def post_ping_message(channel: discord.TextChannel, daily_index: int, auctions: list):
+    """
+    Envoie un message formaté dans Auction Ping regroupant les cartes par rareté.
+    auctions = liste de dicts avec : id, title, version, event, rarity, link
+    """
+    lines = [f"<@&{PING_ROLE_ID}> Batch #{daily_index}"]
 
-    # Section par rareté
-    for rarity, emoji in RARITY_EMOJIS.items():
-        lines.append(f"# {emoji}\n[{card_name} v{version} {event_icon or ''}]({thread_link})".strip())
+    # Regrouper par rareté
+    grouped = {r: [] for r in RARITY_EMOJIS.keys()}
+    for auc in auctions:
+        rarity = (auc.get("rarity") or "COMMON").upper()
+        if rarity not in grouped:
+            grouped[rarity] = []
+        event_icon = auc.get("event") or ""
+        version = auc.get("version") or "?"
+        card_line = f"- [{auc['title']} v{version} {event_icon}]({auc['link']})"
+        grouped[rarity].append(card_line)
+
+    # Construire le message uniquement avec les raretés présentes
+    for rarity, cards in grouped.items():
+        if not cards:
+            continue
+        emoji = RARITY_EMOJIS.get(rarity, "")
+        lines.append(f"\n**{rarity}** {emoji}")
+        lines.extend(cards)
 
     await channel.send("\n".join(lines))
 
@@ -95,12 +109,11 @@ class Scheduler(commands.Cog):
         if not items:
             return
 
-        posted_links = []
-        daily_index = 0  # compteur du jour
+        auctions_today = []
+        daily_index = 0
 
         for it in items:
-            daily_index += 1  # incrémenter pour chaque carte
-
+            daily_index += 1
             forum_id = rarity_to_forum_id(self.bot, it["rarity"], it["queue_type"])
             forum = guild.get_channel(forum_id)
             if not forum or forum.type != discord.ChannelType.forum:
@@ -128,7 +141,6 @@ class Scheduler(commands.Cog):
                 embed.set_image(url=it["image_url"])
 
             try:
-                # create_thread returns ThreadWithMessage in discord.py 2.x
                 thread_with_msg = await forum.create_thread(
                     name=card_name,
                     content=None,
@@ -136,7 +148,6 @@ class Scheduler(commands.Cog):
                 )
                 thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
-                posted_links.append((emoji, card_name, link))
 
                 # Mark auction as posted
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
@@ -159,26 +170,26 @@ class Scheduler(commands.Cog):
                         log_embed.set_image(url=it["image_url"])
                     await log_channel.send(embed=log_embed)
 
-                # --- Nouveau : envoi dans Auction Ping ---
-                ping_channel = guild.get_channel(self.bot.ping_channel_id)
-                if ping_channel:
-                    event_icon = it.get("event") or ""
-                    version = it.get("version") or "?"
-                    await post_ping_message(
-                        ping_channel,
-                        it["id"],       # ID DB
-                        daily_index,    # compteur du jour
-                        card_name,
-                        version,
-                        event_icon,
-                        link
-                    )
+                # Ajouter à la liste pour Auction Ping
+                auctions_today.append({
+                    "id": it["id"],
+                    "title": card_name,
+                    "version": it.get("version"),
+                    "event": it.get("event"),
+                    "rarity": it.get("rarity"),
+                    "link": link
+                })
 
             except Exception as e:
                 print("Error creating thread:", e)
 
-        # Delete the batch after posting (batch_items are removed via ON DELETE CASCADE)
+        # Delete the batch after posting
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
+
+        # Envoi regroupé dans Auction Ping
+        ping_channel = guild.get_channel(self.bot.ping_channel_id)
+        if ping_channel and auctions_today:
+            await post_ping_message(ping_channel, daily_index, auctions_today)
 
     # --- Debug command to force posting ---
     @discord.app_commands.command(name="batch-post", description="Force posting of today's batch (debug).")
@@ -187,6 +198,7 @@ class Scheduler(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         await self.post_forums_and_summary()
         await interaction.followup.send("✅ Batch posting forced.", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Scheduler(bot))
