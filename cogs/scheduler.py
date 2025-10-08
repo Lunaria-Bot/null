@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
+import re
 from .auction_core import lock_today_batch, get_or_create_today_batch
 from .utils import rarity_to_forum_id
 
@@ -18,6 +19,14 @@ RARITY_EMOJIS = {
 
 PING_ROLE_ID = 1303005123622207559
 
+# --- Helper pour nettoyer les titres déjà suffixés par vXX ---
+VERSION_SUFFIX_RE = re.compile(r"\s*v\s*\d+\s*$", re.IGNORECASE)
+
+def strip_version_suffix(name: str) -> str:
+    if not name:
+        return name
+    return VERSION_SUFFIX_RE.sub("", name).strip()
+
 
 async def post_ping_message(channel: discord.TextChannel, daily_index: int, auctions: list):
     """
@@ -32,10 +41,14 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         rarity = (auc.get("rarity") or "COMMON").upper()
         if rarity not in grouped:
             grouped[rarity] = []
+
+        version = auc.get("version")
         event_icon = auc.get("event") or ""
-        version = auc.get("version") or "?"
-        # ✅ On assemble ici (pas de version dans title pour éviter doublons)
-        card_line = f"- [{auc['title']} v{version} {event_icon}]({auc['link']})"
+        display_title = auc["title"]
+        if version:  # ✅ on ajoute la version une seule fois
+            display_title = f"{display_title} v{version}"
+
+        card_line = f"- [{display_title} {event_icon}]({auc['link']})".strip()
         grouped[rarity].append(card_line)
 
     # Construire le message uniquement avec les raretés présentes
@@ -60,10 +73,8 @@ class Scheduler(commands.Cog):
     @tasks.loop(minutes=1)
     async def tick(self):
         now = datetime.now(CEST)
-        # Lock the batch at 17:30 CEST
         if now.hour == 17 and now.minute == 30:
             await lock_today_batch(self.bot.pg)
-        # Close yesterday's threads and post today's auctions at 17:57 CEST
         if now.hour == 17 and now.minute == 57:
             await self.close_yesterday_threads()
             await self.post_forums_and_summary()
@@ -120,14 +131,13 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
 
-            # ✅ Nom de la carte sans version
-            card_name = it["title"] or (
-                it["series"] if it["series"] else f"Auction #{it['id']}"
-            )
+            # ✅ Nom de la carte sans version (nettoyé)
+            raw_name = it["title"] or (it["series"] if it["series"] else f"Auction #{it['id']}")
+            card_name = strip_version_suffix(raw_name)
+
             rarity = (it.get("rarity") or "COMMON").upper()
             emoji = RARITY_EMOJIS.get(rarity, "")
 
-            # Embed visuel pour le thread
             embed = discord.Embed(
                 title=f"{emoji} {card_name}" if emoji else card_name,
                 description=f"Auction posted by <@{it['user_id']}>",
@@ -150,10 +160,8 @@ class Scheduler(commands.Cog):
                 thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
 
-                # Marquer comme posté
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
 
-                # Log interne
                 log_channel = guild.get_channel(self.bot.log_channel_id)
                 if log_channel:
                     log_embed = discord.Embed(
@@ -171,10 +179,9 @@ class Scheduler(commands.Cog):
                         log_embed.set_image(url=it["image_url"])
                     await log_channel.send(embed=log_embed)
 
-                # Ajouter à la liste pour Auction Ping
                 auctions_today.append({
                     "id": it["id"],
-                    "title": card_name,   # sans version
+                    "title": card_name,   # ✅ sans version
                     "version": it.get("version"),
                     "event": it.get("event"),
                     "rarity": it.get("rarity"),
@@ -184,15 +191,12 @@ class Scheduler(commands.Cog):
             except Exception as e:
                 print("Error creating thread:", e)
 
-        # Supprimer le batch après publication
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
-        # Envoi regroupé dans Auction Ping
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
         if ping_channel and auctions_today:
             await post_ping_message(ping_channel, daily_index, auctions_today)
 
-    # --- Debug command to force posting ---
     @discord.app_commands.command(name="batch-post", description="Force posting of today's batch (debug).")
     @discord.app_commands.default_permissions(administrator=True)
     async def batch_post(self, interaction: discord.Interaction):
