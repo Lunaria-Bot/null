@@ -34,6 +34,7 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
             grouped[rarity] = []
         event_icon = auc.get("event") or ""
         version = auc.get("version") or "?"
+        # ✅ On assemble ici (pas de version dans title pour éviter doublons)
         card_line = f"- [{auc['title']} v{version} {event_icon}]({auc['link']})"
         grouped[rarity].append(card_line)
 
@@ -91,6 +92,7 @@ class Scheduler(commands.Cog):
                         await thread.edit(archived=True, locked=True)
             except Exception as e:
                 print("Error closing threads:", e)
+
     async def post_forums_and_summary(self):
         guild = self.bot.get_guild(self.bot.guild_id)
         if not guild:
@@ -118,7 +120,7 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
 
-            # Nom de la carte (sans version pour éviter doublons)
+            # ✅ Nom de la carte sans version
             card_name = it["title"] or (
                 it["series"] if it["series"] else f"Auction #{it['id']}"
             )
@@ -172,7 +174,7 @@ class Scheduler(commands.Cog):
                 # Ajouter à la liste pour Auction Ping
                 auctions_today.append({
                     "id": it["id"],
-                    "title": card_name,
+                    "title": card_name,   # sans version
                     "version": it.get("version"),
                     "event": it.get("event"),
                     "rarity": it.get("rarity"),
