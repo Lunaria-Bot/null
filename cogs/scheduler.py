@@ -58,7 +58,7 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
             continue
         emoji = RARITY_EMOJIS.get(rarity, "")
         # On affiche uniquement l’emoji
-        lines.append(f"\n{emoji}")
+        lines.append(f"\n# {emoji}")  # gros titre
         lines.extend(cards)
 
     await channel.send("\n".join(lines))
