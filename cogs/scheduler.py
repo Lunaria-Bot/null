@@ -204,7 +204,7 @@ class Scheduler(commands.Cog):
 
         # Envoi regroupé dans Auction Ping
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
-        if ping_channel && auctions_today:
+        if ping_channel and auctions_today:
             await post_ping_message(ping_channel, daily_index, auctions_today)
 
     # --- Debug command to force posting ---
