@@ -91,7 +91,6 @@ class Scheduler(commands.Cog):
                         await thread.edit(archived=True, locked=True)
             except Exception as e:
                 print("Error closing threads:", e)
-
     async def post_forums_and_summary(self):
         guild = self.bot.get_guild(self.bot.guild_id)
         if not guild:
@@ -119,14 +118,14 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
 
-            # Resolve name and rarity emoji
+            # Nom de la carte (sans version pour éviter doublons)
             card_name = it["title"] or (
-                f"{it['series']} v{it['version']}" if it["series"] and it["version"] else f"Auction #{it['id']}"
+                it["series"] if it["series"] else f"Auction #{it['id']}"
             )
             rarity = (it.get("rarity") or "COMMON").upper()
             emoji = RARITY_EMOJIS.get(rarity, "")
 
-            # Visual embed for the thread
+            # Embed visuel pour le thread
             embed = discord.Embed(
                 title=f"{emoji} {card_name}" if emoji else card_name,
                 description=f"Auction posted by <@{it['user_id']}>",
@@ -149,10 +148,10 @@ class Scheduler(commands.Cog):
                 thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
 
-                # Mark auction as posted
+                # Marquer comme posté
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
 
-                # Log "Auction posted" to the log channel
+                # Log interne
                 log_channel = guild.get_channel(self.bot.log_channel_id)
                 if log_channel:
                     log_embed = discord.Embed(
@@ -183,7 +182,7 @@ class Scheduler(commands.Cog):
             except Exception as e:
                 print("Error creating thread:", e)
 
-        # Delete the batch after posting
+        # Supprimer le batch après publication
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
         # Envoi regroupé dans Auction Ping
