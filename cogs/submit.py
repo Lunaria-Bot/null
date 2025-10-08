@@ -233,11 +233,11 @@ class ConfigView(discord.ui.View):
         # Message de rappel pour les fees / CM
         fee_msg = None
         if self.queue_display == "Normal queue":
-            fee_msg = "💰 Pay fees to <@723441401211256842>\nNormal Queue: 500bs"
+            fee_msg = "💰 Pay fees to <@723441401211256842>\nNormal Queue: 500 bs or 3ms "
         elif self.queue_display == "Skip queue":
-            fee_msg = "💰 Pay fees to <@723441401211256842>\nSkip Queue: 2000bs"
+            fee_msg = "💰 Pay fees to <@723441401211256842>\nSkip Queue: 2000bs or 10ms "
         elif self.queue_display == "Card Maker":
-            fee_msg = "⚠️ Card Maker queue selected.\nThank you for selecting Lilac to submit your card !"
+            fee_msg = "💰 Pay fees to <@723441401211256842>\nSkip Queue: 2000bs or 10ms "
 
         if fee_msg:
             try:
