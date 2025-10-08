@@ -13,7 +13,7 @@ RARITY_EMOJIS = {
     "COMMON": "<a:Common:1342208021853634781>",
     "RARE": "<a:Rare:1342208028342091857>",
     "SR": "<a:SuperRare:1342208034482425936>",
-    "SSR": "<a:SuperSuperRare:1342208039918370857>",
+    "SSR": "<a:SSR_GG:1343741800321384521>",
     "UR": "<a:UltraRare:1342208044351623199>",
 }
 
@@ -46,7 +46,7 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         event_icon = auc.get("event") or ""
         display_title = auc["title"]
 
-        # ✅ Hyperlink uniquement sur le nom, version en backticks
+        # Hyperlink uniquement sur le nom, version en backticks
         if version:
             card_line = f"[{display_title}]({auc['link']}) `v{version}` {event_icon}".strip()
         else:
@@ -59,7 +59,7 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         if not cards:
             continue
         emoji = RARITY_EMOJIS.get(rarity, "")
-        # ✅ On affiche uniquement l’emoji en titre
+        # On affiche uniquement l’emoji en titre
         lines.append(f"\n# {emoji}")
         lines.extend(cards)
 
@@ -135,7 +135,7 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
 
-            # ✅ Nom de la carte sans version (nettoyé)
+            # Nom de la carte sans version (nettoyé)
             raw_name = it["title"] or (it["series"] if it["series"] else f"Auction #{it['id']}")
             card_name = strip_version_suffix(raw_name)
 
@@ -185,7 +185,7 @@ class Scheduler(commands.Cog):
 
                 auctions_today.append({
                     "id": it["id"],
-                    "title": card_name,   # ✅ sans version
+                    "title": card_name,   # sans version
                     "version": it.get("version"),
                     "event": it.get("event"),
                     "rarity": it.get("rarity"),
@@ -209,6 +209,6 @@ class Scheduler(commands.Cog):
         await interaction.followup.send("✅ Batch posting forced.", ephemeral=True)
 
 
-# ✅ Fin corrigée
+# Entrypoint de l'extension (fin correcte)
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Scheduler(bot
+    await bot.add_cog(Scheduler(bot))
