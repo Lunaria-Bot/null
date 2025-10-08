@@ -12,9 +12,27 @@ RARITY_EMOJIS = {
     "COMMON": "<a:Common:1342208021853634781>",
     "RARE": "<a:Rare:1342208028342091857>",
     "SR": "<a:SuperRare:1342208034482425936>",
-    "SSR": "<a:SSR_GG:1343741800321384521>",
+    "SSR": "<a:SuperSuperRare:1342208039918370857>",
     "UR": "<a:UltraRare:1342208044351623199>",
 }
+
+PING_ROLE_ID = 1303005123622207559
+
+async def post_ping_message(channel: discord.TextChannel, auction_number: int, daily_index: int, card_name: str, version: str, event_icon: str, thread_link: str):
+    # En-tête avec ping du rôle, numéro du jour et ID DB
+    lines = [f"<@&{PING_ROLE_ID}> #{daily_index} (Auction ID: {auction_number})"]
+
+    # Section CM
+    base_line = f"[{card_name} v{version} {event_icon or ''}]({thread_link})".strip()
+    lines.append("# CM")
+    lines.append(base_line)
+
+    # Section par rareté
+    for rarity, emoji in RARITY_EMOJIS.items():
+        lines.append(f"# {emoji}\n[{card_name} v{version} {event_icon or ''}]({thread_link})".strip())
+
+    await channel.send("\n".join(lines))
+
 
 class Scheduler(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -68,7 +86,7 @@ class Scheduler(commands.Cog):
         bid = await get_or_create_today_batch(self.bot.pg)
         items = await self.bot.pg.fetch("""
             SELECT bi.position, a.id, a.user_id, a.rarity, a.queue_type,
-                   a.series, a.version, a.title, a.currency, a.rate, a.image_url
+                   a.series, a.version, a.title, a.currency, a.rate, a.image_url, a.event
             FROM batch_items bi
             JOIN auctions a ON a.id=bi.auction_id
             WHERE bi.batch_id=$1
@@ -78,7 +96,11 @@ class Scheduler(commands.Cog):
             return
 
         posted_links = []
+        daily_index = 0  # compteur du jour
+
         for it in items:
+            daily_index += 1  # incrémenter pour chaque carte
+
             forum_id = rarity_to_forum_id(self.bot, it["rarity"], it["queue_type"])
             forum = guild.get_channel(forum_id)
             if not forum or forum.type != discord.ChannelType.forum:
@@ -108,7 +130,7 @@ class Scheduler(commands.Cog):
             try:
                 # create_thread returns ThreadWithMessage in discord.py 2.x
                 thread_with_msg = await forum.create_thread(
-                    name=card_name,  # keep thread name clean; emoji is in the embed
+                    name=card_name,
                     content=None,
                     embed=embed
                 )
@@ -137,20 +159,26 @@ class Scheduler(commands.Cog):
                         log_embed.set_image(url=it["image_url"])
                     await log_channel.send(embed=log_embed)
 
+                # --- Nouveau : envoi dans Auction Ping ---
+                ping_channel = guild.get_channel(self.bot.ping_channel_id)
+                if ping_channel:
+                    event_icon = it.get("event") or ""
+                    version = it.get("version") or "?"
+                    await post_ping_message(
+                        ping_channel,
+                        it["id"],       # ID DB
+                        daily_index,    # compteur du jour
+                        card_name,
+                        version,
+                        event_icon,
+                        link
+                    )
+
             except Exception as e:
                 print("Error creating thread:", e)
 
         # Delete the batch after posting (batch_items are removed via ON DELETE CASCADE)
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
-
-        # Summary ping with links (include emoji before the title if available)
-        ping_channel = guild.get_channel(self.bot.ping_channel_id)
-        if posted_links and ping_channel:
-            lines = [
-                f"{em or ''} [{title}]({link})".strip()
-                for em, title, link in posted_links
-            ]
-            await ping_channel.send("Today's auctions:\n" + "\n".join(lines))
 
     # --- Debug command to force posting ---
     @discord.app_commands.command(name="batch-post", description="Force posting of today's batch (debug).")
