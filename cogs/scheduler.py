@@ -207,4 +207,6 @@ class Scheduler(commands.Cog):
         await interaction.followup.send("✅ Batch posting forced.", ephemeral=True)
 
 
-async def setup(bot: commands.Bot
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Scheduler(bot))
+
