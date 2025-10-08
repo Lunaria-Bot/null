@@ -48,7 +48,8 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         if version:  # ✅ on ajoute la version une seule fois
             display_title = f"{display_title} v{version}"
 
-        card_line = f"- [{display_title} {event_icon}]({auc['link']})".strip()
+        # ✅ Pas de tiret devant le nom
+        card_line = f"[{display_title} {event_icon}]({auc['link']})".strip()
         grouped[rarity].append(card_line)
 
     # Construire le message uniquement avec les raretés présentes
@@ -56,7 +57,8 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         if not cards:
             continue
         emoji = RARITY_EMOJIS.get(rarity, "")
-        lines.append(f"\n**{rarity}** {emoji}")
+        # ✅ On affiche uniquement l’emoji
+        lines.append(f"\n{emoji}")
         lines.extend(cards)
 
     await channel.send("\n".join(lines))
@@ -205,5 +207,4 @@ class Scheduler(commands.Cog):
         await interaction.followup.send("✅ Batch posting forced.", ephemeral=True)
 
 
-async def setup(bot: commands.Bot):
-    await bot.add_cog(Scheduler(bot))
+async def setup(bot: commands.Bot
