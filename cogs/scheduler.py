@@ -45,10 +45,10 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         version = auc.get("version")
         event_icon = auc.get("event") or ""
         display_title = auc["title"]
-        if version:  # ✅ on ajoute la version une seule fois
+        if version:  # on ajoute la version une seule fois
             display_title = f"{display_title} v{version}"
 
-        # ✅ Pas de tiret devant le nom
+        # Pas de tiret devant le nom
         card_line = f"[{display_title} {event_icon}]({auc['link']})".strip()
         grouped[rarity].append(card_line)
 
@@ -57,7 +57,7 @@ async def post_ping_message(channel: discord.TextChannel, daily_index: int, auct
         if not cards:
             continue
         emoji = RARITY_EMOJIS.get(rarity, "")
-        # ✅ On affiche uniquement l’emoji
+        # On affiche uniquement l’emoji
         lines.append(f"\n{emoji}")
         lines.extend(cards)
 
@@ -75,8 +75,10 @@ class Scheduler(commands.Cog):
     @tasks.loop(minutes=1)
     async def tick(self):
         now = datetime.now(CEST)
+        # Lock the batch at 17:30 CEST
         if now.hour == 17 and now.minute == 30:
             await lock_today_batch(self.bot.pg)
+        # Close yesterday's threads and post today's auctions at 17:57 CEST
         if now.hour == 17 and now.minute == 57:
             await self.close_yesterday_threads()
             await self.post_forums_and_summary()
@@ -133,13 +135,14 @@ class Scheduler(commands.Cog):
             if not forum or forum.type != discord.ChannelType.forum:
                 continue
 
-            # ✅ Nom de la carte sans version (nettoyé)
+            # Nom de la carte sans version (nettoyé)
             raw_name = it["title"] or (it["series"] if it["series"] else f"Auction #{it['id']}")
             card_name = strip_version_suffix(raw_name)
 
             rarity = (it.get("rarity") or "COMMON").upper()
             emoji = RARITY_EMOJIS.get(rarity, "")
 
+            # Embed visuel pour le thread
             embed = discord.Embed(
                 title=f"{emoji} {card_name}" if emoji else card_name,
                 description=f"Auction posted by <@{it['user_id']}>",
@@ -162,8 +165,10 @@ class Scheduler(commands.Cog):
                 thread = thread_with_msg.thread
                 link = f"https://discord.com/channels/{guild.id}/{thread.id}"
 
+                # Marquer comme posté
                 await self.bot.pg.execute("UPDATE auctions SET status='POSTED' WHERE id=$1", it["id"])
 
+                # Log interne
                 log_channel = guild.get_channel(self.bot.log_channel_id)
                 if log_channel:
                     log_embed = discord.Embed(
@@ -181,9 +186,10 @@ class Scheduler(commands.Cog):
                         log_embed.set_image(url=it["image_url"])
                     await log_channel.send(embed=log_embed)
 
+                # Ajouter à la liste pour Auction Ping
                 auctions_today.append({
                     "id": it["id"],
-                    "title": card_name,   # ✅ sans version
+                    "title": card_name,   # sans version
                     "version": it.get("version"),
                     "event": it.get("event"),
                     "rarity": it.get("rarity"),
@@ -193,12 +199,15 @@ class Scheduler(commands.Cog):
             except Exception as e:
                 print("Error creating thread:", e)
 
+        # Supprimer le batch après publication
         await self.bot.pg.execute("DELETE FROM batches WHERE id=$1", bid)
 
+        # Envoi regroupé dans Auction Ping
         ping_channel = guild.get_channel(self.bot.ping_channel_id)
-        if ping_channel and auctions_today:
+        if ping_channel && auctions_today:
             await post_ping_message(ping_channel, daily_index, auctions_today)
 
+    # --- Debug command to force posting ---
     @discord.app_commands.command(name="batch-post", description="Force posting of today's batch (debug).")
     @discord.app_commands.default_permissions(administrator=True)
     async def batch_post(self, interaction: discord.Interaction):
@@ -207,6 +216,6 @@ class Scheduler(commands.Cog):
         await interaction.followup.send("✅ Batch posting forced.", ephemeral=True)
 
 
+# Fin du fichier: extension entrypoint
 async def setup(bot: commands.Bot):
     await bot.add_cog(Scheduler(bot))
-
