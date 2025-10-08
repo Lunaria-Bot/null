@@ -87,6 +87,37 @@ async def sync_global_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     synced = await bot.tree.sync()  # global sync
     await interaction.followup.send(f"🌍 Synced {len(synced)} commands globally. (May take ~1h to propagate)")
+# --- Commande sync-clear ---
+@bot.tree.command(name="sync-clear", description="Clear ALL commands (global & guild) then resync")
+@commands.has_permissions(administrator=True)
+async def sync_clear_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    # Supprimer toutes les commandes globales
+    bot.tree.clear_commands(guild=None)
+    cleared_global = await bot.tree.sync()  # push clear
+
+    # Supprimer toutes les commandes de la guilde
+    guild = discord.Object(id=interaction.guild_id)
+    bot.tree.clear_commands(guild=guild)
+    cleared_guild = await bot.tree.sync(guild=guild)
+
+    # Re-copie des commandes globales vers la guilde
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+
+    # ✅ Log console
+    print("🧹 Sync-Clear executed")
+    print(f"   Cleared {len(cleared_global)} global commands")
+    print(f"   Cleared {len(cleared_guild)} guild commands")
+    print(f"   Resynced {len(synced)} commands to guild {interaction.guild_id}")
+
+    # ✅ Retour Discord
+    await interaction.followup.send(
+        f"🧹 Cleared {len(cleared_global)} global & {len(cleared_guild)} guild commands.\n"
+        f"✅ Resynced {len(synced)} commands to guild {interaction.guild_id}.",
+        ephemeral=True
+    )
 
 # --- Login console ---
 @bot.event
