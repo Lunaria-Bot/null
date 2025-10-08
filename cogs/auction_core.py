@@ -4,8 +4,6 @@ import discord
 from discord.ext import commands
 from typing import Optional, Dict
 from datetime import date
-
-# Pour la commande admin /auction-force-ready
 from discord import app_commands
 
 RARITY_FROM_EMOJI_ID = {
@@ -61,7 +59,7 @@ def parse_rarity(embed_dict: Dict) -> Optional[str]:
             return key
     return None
 
-# --- NEW: parseur Event / Special ---
+# --- Détection Event / Special ---
 def parse_event_or_special(embed_dict: Dict) -> Dict[str, Optional[str]]:
     title = (embed_dict.get("title") or "").lower()
     desc = (embed_dict.get("description") or "").lower()
@@ -71,24 +69,22 @@ def parse_event_or_special(embed_dict: Dict) -> Dict[str, Optional[str]]:
     event_icon = None
     special_icon = None
 
-    # 🔹 Event
-    if "🔹" in (embed_dict.get("title") or "") or "🔹" in (embed_dict.get("description") or "") or "🔹" in footer:
-        if "christmas" in text:
-            event_icon = "🎄"
-        elif "halloween" in text:
-            event_icon = "🎃"
-        elif "maid" in text:
-            event_icon = "<:maidbow:1399426280549777439>"
-        elif "summer" in text:
-            event_icon = "🏖️"
+    # Event
+    if "christmas" in text or "🎄" in text:
+        event_icon = "🎄"
+    elif "halloween" in text or "🎃" in text:
+        event_icon = "🎃"
+    elif "maid" in text or "<:maidbow:" in text:
+        event_icon = "<:maidbow:1399426280549777439>"
+    elif "summer" in text or "🏖️" in text:
+        event_icon = "🏖️"
 
-    # 🔸 Special
-    if "🔸" in (embed_dict.get("title") or "") or "🔸" in (embed_dict.get("description") or "") or "🔸" in footer:
-        if "special" in text:
-            special_icon = "✨"
+    # Special
+    if "special" in text or "✨" in text:
+        special_icon = "✨"
 
     return {"event": event_icon, "special": special_icon}
-# --- Log utilitaire quand une carte entre en waiting list (READY) ---
+# --- Log utilitaire ---
 async def log_card_ready(bot: commands.Bot, auction: Dict):
     guild = bot.get_guild(bot.guild_id)
     if not guild:
@@ -98,14 +94,14 @@ async def log_card_ready(bot: commands.Bot, auction: Dict):
         return
 
     card_name = auction["title"] or (
-        f"{auction['series']} v{auction['version']}" if auction.get("series") and auction.get("version") else f"Auction #{auction['id']}"
+        f"{auction['series']}" if auction.get("series") else f"Auction #{auction['id']}"
     )
 
     embed = discord.Embed(
         title="Card added to waiting list",
         color=discord.Color.green()
     )
-    embed.add_field(name="Name of the card", value=card_name, inline=True)
+    embed.add_field(name="Name of the card", value=f"{card_name} v{auction.get('version') or '?'}", inline=True)
     embed.add_field(name="Version", value=auction.get("version") or "?", inline=True)
     embed.add_field(name="Queue", value=auction.get("queue_type") or "?", inline=True)
     embed.add_field(name="Seller", value=f"<@{auction['user_id']}>", inline=True)
@@ -121,13 +117,15 @@ async def log_card_ready(bot: commands.Bot, auction: Dict):
 
     await log_channel.send(embed=embed)
 
-# --- Helper: marquer une enchère READY et loguer ---
+
+# --- Helper ---
 async def mark_auction_ready(bot: commands.Bot, pool, auction_id: int):
     await pool.execute("UPDATE auctions SET status='READY' WHERE id=$1", auction_id)
     auction = await pool.fetchrow("SELECT * FROM auctions WHERE id=$1", auction_id)
     if auction:
         await log_card_ready(bot, dict(auction))
     return auction
+
 
 class AuctionCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -163,7 +161,6 @@ class AuctionCore(commands.Cog):
         series = parse_series_from_desc(desc)
         batch = parse_batch_from_desc(desc)
 
-        # --- NEW: detect event/special
         event_info = parse_event_or_special(data)
 
         payload = {
@@ -191,7 +188,8 @@ class AuctionCore(commands.Cog):
         else:
             await interaction.followup.send(f"❌ Auction #{auction_id} not found.", ephemeral=True)
 
-# --- Initialisation DB ---
+
+# --- Init DB ---
 async def init_db(pool):
     await pool.execute("""
     CREATE TABLE IF NOT EXISTS auctions (
@@ -236,6 +234,7 @@ async def init_db(pool):
     """)
     return True
 
+
 async def get_or_create_today_batch(pool) -> int:
     today = date.today()
     rec = await pool.fetchrow("SELECT id FROM batches WHERE batch_date=$1", today)
@@ -244,9 +243,11 @@ async def get_or_create_today_batch(pool) -> int:
     rec = await pool.fetchrow("INSERT INTO batches (batch_date) VALUES ($1) RETURNING id", today)
     return rec["id"]
 
+
 async def lock_today_batch(pool):
     today = date.today()
     await pool.execute("UPDATE batches SET locked_at=NOW() WHERE batch_date=$1 AND locked_at IS NULL", today)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AuctionCore(bot))
