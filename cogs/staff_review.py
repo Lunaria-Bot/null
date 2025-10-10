@@ -1,7 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
-from .admin_guard import is_staff  # ✅ Import du décorateur staff
 
 # IDs des canaux de log par queue
 QUEUE_CHANNELS = {
@@ -10,7 +8,6 @@ QUEUE_CHANNELS = {
     "CARD_MAKER": 1395404596230361209,
 }
 
-# Channel de log global (actions staff)
 LOG_CHANNEL_ID = 1424688704584286248
 
 
@@ -18,9 +15,7 @@ class StaffReview(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-
     async def log_submission(self, auction: dict):
-        """Appelé depuis submit.py pour log la soumission dans le bon canal"""
         qtype = auction["queue_type"]
         channel_id = QUEUE_CHANNELS.get(qtype)
         if not channel_id:
@@ -40,6 +35,7 @@ class StaffReview(commands.Cog):
         embed.add_field(name="Currency", value=auction["currency"], inline=True)
         embed.add_field(name="Rate", value=auction["rate"] or "—", inline=True)
         embed.add_field(name="Version", value=auction["version"] or "?", inline=True)
+        embed.add_field(name="Status", value="PENDING ⏳", inline=True)  # ✅ Ajout
         if auction["image_url"]:
             embed.set_image(url=auction["image_url"])
 
@@ -47,10 +43,9 @@ class StaffReview(commands.Cog):
         await channel.send(embed=embed, view=view)
 
 
-# --- Boutons persistants Accept / Deny / Fee Paid ---
 class ReviewButtons(discord.ui.View):
     def __init__(self, bot, auction_id: int):
-        super().__init__(timeout=None)  # ✅ View persistante
+        super().__init__(timeout=None)
         self.bot = bot
         self.auction_id = auction_id
 
@@ -64,23 +59,7 @@ class ReviewButtons(discord.ui.View):
         modal = ReasonModal(self.bot, self.auction_id, "DENY", interaction.message)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="💰 Fee paid", style=discord.ButtonStyle.secondary, custom_id="review:fee")
-    async def fee_paid(self, interaction: discord.Interaction, button: discord.ui.Button):
-        msg = interaction.message
-        if not msg.embeds:
-            return await interaction.response.send_message("No embed to update.", ephemeral=True)
 
-        embed = msg.embeds[0]
-        embed.add_field(name="Fees", value="Paid", inline=False)
-
-        button.style = discord.ButtonStyle.success
-        button.disabled = True
-
-        await msg.edit(embed=embed, view=self)
-        await interaction.response.send_message("Marked as fees paid.", ephemeral=True)
-
-
-# --- Modal pour raison facultative ---
 class ReasonModal(discord.ui.Modal):
     def __init__(self, bot, auction_id: int, action: str, message: discord.Message):
         super().__init__(title=f"{action} Auction")
@@ -103,37 +82,38 @@ class ReasonModal(discord.ui.Modal):
             await self.bot.pg.execute("UPDATE auctions SET status='READY' WHERE id=$1", self.auction_id)
             embed.description = f"✅ Submission approved\nReason: {reason}"
             embed.color = discord.Color.green()
-            await self.message.edit(embed=embed, view=None)
-            await interaction.response.send_message(f"Auction #{self.auction_id} approved.", ephemeral=True)
-
-            if log_channel:
-                log_embed = discord.Embed(
-                    title="✅ Auction approved",
-                    description=f"Auction #{self.auction_id} approved by {interaction.user.mention}",
-                    color=discord.Color.green()
-                )
-                log_embed.add_field(name="Reason", value=reason, inline=False)
-                await log_channel.send(embed=log_embed)
+            self._update_status(embed, "READY ✅")
 
         elif self.action == "DENY":
             await self.bot.pg.execute("UPDATE auctions SET status='DENIED' WHERE id=$1", self.auction_id)
             embed.description = f"❌ Submission denied\nReason: {reason}"
             embed.color = discord.Color.red()
-            await self.message.edit(embed=embed, view=None)
-            await interaction.response.send_message(f"Auction #{self.auction_id} denied.", ephemeral=True)
+            self._update_status(embed, "DENIED ❌")
 
-            if log_channel:
-                log_embed = discord.Embed(
-                    title="❌ Auction denied",
-                    description=f"Auction #{self.auction_id} denied by {interaction.user.mention}",
-                    color=discord.Color.red()
-                )
-                log_embed.add_field(name="Reason", value=reason, inline=False)
-                await log_channel.send(embed=log_embed)
+        await self.message.edit(embed=embed, view=None)
+        await interaction.response.send_message(f"Auction #{self.auction_id} {self.action.lower()}ed.", ephemeral=True)
+
+        if log_channel:
+            log_embed = discord.Embed(
+                title=f"{'✅' if self.action=='ACCEPT' else '❌'} Auction {self.action.lower()}ed",
+                description=f"Auction #{self.auction_id} {self.action.lower()}ed by {interaction.user.mention}",
+                color=embed.color
+            )
+            log_embed.add_field(name="Reason", value=reason, inline=False)
+            await log_channel.send(embed=log_embed)
+
+    def _update_status(self, embed: discord.Embed, status: str):
+        for i, field in enumerate(embed.fields):
+            if field.name == "Status":
+                embed.set_field_at(i, name="Status", value=status, inline=True)
+                return
+        embed.add_field(name="Status", value=status, inline=True)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StaffReview(bot))
 
-    # ✅ Réattacher les Views persistantes au redémarrage
-    bot.add_view(ReviewButtons(bot, auction_id=0))
+    # ✅ Réattacher toutes les Views persistantes au redémarrage
+    rows = await bot.pg.fetch("SELECT id FROM auctions WHERE status='PENDING'")
+    for row in rows:
+        bot.add_view(ReviewButtons(bot, row["id"]))
