@@ -22,7 +22,7 @@ CURRENCY_OPTIONS = [
 FEES = {
     "Normal queue": "500 BS or 3 MS",
     "Skip queue": "2000 BS or 10 MS",
-    "Card Maker": "Negotiated fee (PayPal or special terms)"
+    "Card Maker": "2000 BS or 10 MS"
 }
 
 
