@@ -197,6 +197,96 @@ async def batch_fill(self, interaction: discord.Interaction):
         await interaction.followup.send(f"🔒 {locked_count} auction threads have been locked and archived.", ephemeral=True)
 
 
+import discord
+from discord.ext import commands
+from discord import app_commands
+from .auction_core import get_or_create_today_batch
+from .admin_guard import is_staff
+
+# Forums d'enchères à scanner pour /auction-lock
+AUCTION_FORUMS = [
+    1304507540645740666,  # Common
+    1304507516423766098,  # Rare
+    1304536219677626442,  # SR
+    1304502617472503908,  # SSR
+    1304052056109350922,  # UR
+    1395405043431116871,  # CM
+]
+
+# Channel de log
+LOG_CHANNEL_ID = 1424688704584286248
+
+
+class BatchPreparation(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    # -------------------------
+    # BATCH COMMANDS
+    # -------------------------
+
+    @app_commands.command(name="batch-clear", description="Clear items in today's batch.")
+    @is_staff()
+    async def batch_clear(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bid = await get_or_create_today_batch(self.bot.pg)
+        await self.bot.pg.execute("DELETE FROM batch_items WHERE batch_id=$1", bid)
+        await interaction.followup.send(f"Batch #{bid} cleared.", ephemeral=True)
+
+    @app_commands.command(
+        name="batch-fill",
+        description="Fill batch with READY auctions (15 Normal max, unlimited Skip & CardMaker)."
+    )
+    @is_staff()
+    async def batch_fill(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bid = await get_or_create_today_batch(self.bot.pg)
+
+        normals = await self.bot.pg.fetch("""
+            SELECT id, user_id, title, version, rarity
+            FROM auctions
+            WHERE status='READY' AND queue_type='NORMAL'
+            ORDER BY id ASC
+            LIMIT 15
+        """)
+
+        skips = await self.bot.pg.fetch("""
+            SELECT id, user_id, title, version, rarity
+            FROM auctions
+            WHERE status='READY' AND queue_type='SKIP'
+            ORDER BY id ASC
+        """)
+
+        cms = await self.bot.pg.fetch("""
+            SELECT id, user_id, title, version, rarity
+            FROM auctions
+            WHERE status='READY' AND queue_type='CARD_MAKER'
+            ORDER BY id ASC
+        """)
+
+        # ✅ Filtrage des doublons (même user + même carte)
+        seen = set()
+        unique = []
+        for row in normals + skips + cms:
+            key = (row["user_id"], row["title"], row["version"], row["rarity"])
+            if key not in seen:
+                seen.add(key)
+                unique.append(row)
+
+        # ✅ Insertion dans batch_items
+        position = 1
+        for row in unique:
+            await self.bot.pg.execute(
+                "INSERT INTO batch_items (batch_id, auction_id, position) VALUES ($1,$2,$3)",
+                bid, row["id"], position
+            )
+            position += 1
+
+        await interaction.followup.send(
+            f"Batch #{bid} filled with {position-1} unique items "
+            f"({len(normals)} Normal, {len(skips)} Skip, {len(cms)} CardMaker before filtering).",
+            ephemeral=True
+        )
 class BatchPaginationView(discord.ui.View):
     def __init__(self, rows, batch_date, owner_id: int):
         super().__init__(timeout=180)
@@ -251,3 +341,4 @@ class BatchPaginationView(discord.ui.View):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BatchPreparation(bot))
+
