@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from .admin_guard import is_staff  # ✅ Import du décorateur staff
 
 # IDs des canaux de log par queue
 QUEUE_CHANNELS = {
@@ -17,25 +18,6 @@ class StaffReview(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="auction-list", description="List auctions pending review.")
-    async def auction_list(self, interaction: discord.Interaction):
-        rows = await self.bot.pg.fetch("""
-            SELECT id, user_id, rarity, queue_type, currency, rate, series, version, title, image_url, status
-            FROM auctions WHERE status='PENDING' ORDER BY id ASC
-        """)
-        if not rows:
-            await interaction.response.send_message("No auctions pending.", ephemeral=True)
-            return
-
-        embed = discord.Embed(title="Pending Auctions", color=discord.Color.orange())
-        for r in rows:
-            name = r["title"] or f"{r['series']} v{r['version']}"
-            embed.add_field(
-                name=f"#{r['id']} — {name}",
-                value=f"User: <@{r['user_id']}> | {r['rarity']} | {r['queue_type']} | {r['currency']} | {r['rate']} | Status: {r['status']}",
-                inline=False
-            )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def log_submission(self, auction: dict):
         """Appelé depuis submit.py pour log la soumission dans le bon canal"""
