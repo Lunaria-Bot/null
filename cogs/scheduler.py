@@ -144,7 +144,7 @@ class Scheduler(commands.Cog):
         if ping_channel and auctions_today:
             await post_ping_message(ping_channel, daily_index, auctions_today)
 
-    @discord.app_commands.command(name="batch-post", description="Force posting of today's batch (manual).")
+    @discord.app_commands.command(name="batch-post", description="Post today auction.")
     @is_staff()
     async def batch_post(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
