@@ -2,8 +2,9 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from .utils import redis_json_load, queue_display_to_type
+import asyncpg  # pour intercepter UniqueViolation
 
-# ✅ Options de sélection
+# Options de sélection
 QUEUE_OPTIONS = [
     discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
     discord.SelectOption(label="Skip queue", value="Skip queue", emoji="⏭️", description="Skip ahead in the queue"),
@@ -17,7 +18,7 @@ CURRENCY_OPTIONS = [
     discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
 ]
 
-# ✅ Tarifs centralisés
+# Tarifs centralisés
 FEES = {
     "Normal queue": "500 BS or 3 MS",
     "Skip queue": "2000 BS or 10 MS",
@@ -28,8 +29,10 @@ FEES = {
 def make_progress_footer(queue: str | None, currency: str | None, rate: str | None) -> str:
     done = 0
     total = 3
-    if queue: done += 1
-    if currency: done += 1
+    if queue:
+        done += 1
+    if currency:
+        done += 1
     if currency == "BS+MS":
         if rate:
             done += 1
@@ -101,7 +104,6 @@ class Submit(commands.Cog):
             await interaction.response.send_message("Enable your DMs so I can send you the form.", ephemeral=True)
 
 
-# --- Sélecteurs ---
 class QueueSelect(discord.ui.Select):
     def __init__(self, parent_view: "ConfigView"):
         super().__init__(placeholder="Select your queue", min_values=1, max_values=1, options=QUEUE_OPTIONS)
@@ -122,7 +124,6 @@ class CurrencySelect(discord.ui.Select):
         await self.parent_view.refresh(interaction, note=f"Currency set: {self.parent_view.currency}")
 
 
-# --- Vue principale ---
 class ConfigView(discord.ui.View):
     def __init__(self, bot, user_id, data):
         super().__init__(timeout=600)
@@ -204,12 +205,11 @@ class ConfigView(discord.ui.View):
                 )
         else:
             if self.currency not in {"BS", "MS", "BS+MS"}:
-                                return await interaction.response.send_message(
+                return await interaction.response.send_message(
                     "Use BS, MS or BS & MS for Normal/Skip.",
                     ephemeral=True
                 )
 
-        # Déterminer la valeur de rate
         rate_value = self.rate if self.rate else (
             "N/A" if str(self.currency).upper() in {"BS", "MS", "PAYPAL"} else None
         )
@@ -219,27 +219,31 @@ class ConfigView(discord.ui.View):
                 ephemeral=True
             )
 
-        # ✅ Insertion en DB avec status='PENDING'
-        rec = await self.bot.pg.fetchrow(
-            """
-            INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11)
-            RETURNING *
-            """,
-            self.user_id,
-            self.data.get("series"),
-            self.data.get("version"),
-            self.data.get("batch"),
-            self.data.get("owner_id"),
-            (self.data.get("rarity") or "COMMON"),
-            qtype,
-            self.currency,
-            rate_value,
-            self.data.get("title"),
-            self.data.get("image_url")
-        )
+        try:
+            rec = await self.bot.pg.fetchrow(
+                """
+                INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11)
+                RETURNING *
+                """,
+                self.user_id,
+                self.data.get("series"),
+                self.data.get("version"),
+                self.data.get("batch"),
+                self.data.get("owner_id"),
+                (self.data.get("rarity") or "COMMON"),
+                qtype,
+                self.currency,
+                rate_value,
+                self.data.get("title"),
+                self.data.get("image_url")
+            )
+        except asyncpg.UniqueViolationError:
+            return await interaction.response.send_message(
+                "⚠️ Tu as déjà soumis cette carte, impossible de la soumettre à nouveau.",
+                ephemeral=True
+            )
 
-        # ✅ Rappel des fees (centralisé)
         if self.queue_display in FEES:
             fee_msg = f"💰 Pay fees to <@723441401211256842>\n{self.queue_display}: {FEES[self.queue_display]}"
             try:
@@ -250,7 +254,6 @@ class ConfigView(discord.ui.View):
                 except discord.HTTPException:
                     pass
 
-        # ✅ Confirmation au joueur avec Status: PENDING
         confirm = discord.Embed(
             title=f"Auction #{rec['id']} submitted",
             description="Your auction was logged for staff review.",
@@ -265,12 +268,13 @@ class ConfigView(discord.ui.View):
         confirm.set_footer(text="You will be notified after staff decision.")
 
         try:
-            await interaction.response.edit_message(content=None, embed=confirm, view=None)
-        except discord.InteractionResponded:
-            await interaction.followup.send(embed=confirm, view=None)
-        self.stop()
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=confirm, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=confirm, ephemeral=True)
+        finally:
+            self.stop()
 
-        # ✅ Log staff (utilise StaffReview.log_submission s'il est chargé)
         staff_cog = self.bot.get_cog("StaffReview")
         if staff_cog and hasattr(staff_cog, "log_submission"):
             await staff_cog.log_submission(rec)
@@ -282,14 +286,16 @@ class ConfigView(discord.ui.View):
             color=discord.Color.red()
         )
         try:
-            await interaction.response.edit_message(content=None, embed=cancel, view=None)
-        except discord.InteractionResponded:
-            await interaction.followup.send(embed=cancel, view=None)
-        self.stop()
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=cancel, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=cancel, ephemeral=True)
+        finally:
+            self.stop()
 
 
 class RateModal(discord.ui.Modal, title="Set rate"):
-    def __init__(self, parent_view: ConfigView):
+    def __init__(self, parent_view: "ConfigView"):
         super().__init__(title="Set rate")
         self.parent_view = parent_view
         self.input = discord.ui.TextInput(
