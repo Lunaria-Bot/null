@@ -99,6 +99,30 @@ class Submit(commands.Cog):
             await interaction.response.send_message("I sent you a private message to complete the submission.", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("Enable your DMs so I can send you the form.", ephemeral=True)
+
+
+# --- Sélecteurs ---
+class QueueSelect(discord.ui.Select):
+    def __init__(self, parent_view: "ConfigView"):
+        super().__init__(placeholder="Select your queue", min_values=1, max_values=1, options=QUEUE_OPTIONS)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.queue_display = self.values[0]
+        await self.parent_view.refresh(interaction, note=f"Queue selected: {self.parent_view.queue_display}")
+
+
+class CurrencySelect(discord.ui.Select):
+    def __init__(self, parent_view: "ConfigView"):
+        super().__init__(placeholder="Select currency", min_values=1, max_values=1, options=CURRENCY_OPTIONS)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.currency = self.values[0]
+        await self.parent_view.refresh(interaction, note=f"Currency set: {self.parent_view.currency}")
+
+
+# --- Vue principale ---
 class ConfigView(discord.ui.View):
     def __init__(self, bot, user_id, data):
         super().__init__(timeout=600)
@@ -180,12 +204,15 @@ class ConfigView(discord.ui.View):
                 )
         else:
             if self.currency not in {"BS", "MS", "BS+MS"}:
-                return await interaction.response.send_message(
+                                return await interaction.response.send_message(
                     "Use BS, MS or BS & MS for Normal/Skip.",
                     ephemeral=True
                 )
 
-        rate_value = self.rate if self.rate else ("N/A" if str(self.currency).upper() in {"BS", "MS", "PAYPAL"} else None)
+        # Déterminer la valeur de rate
+        rate_value = self.rate if self.rate else (
+            "N/A" if str(self.currency).upper() in {"BS", "MS", "PAYPAL"} else None
+        )
         if self.currency == "BS+MS" and not rate_value:
             return await interaction.response.send_message(
                 "Rate is required when choosing BS & MS.",
@@ -193,24 +220,26 @@ class ConfigView(discord.ui.View):
             )
 
         # ✅ Insertion en DB avec status='PENDING'
-        rec = await self.bot.pg.fetchrow("""
+        rec = await self.bot.pg.fetchrow(
+            """
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11)
             RETURNING *
-        """,
-        self.user_id,
-        self.data.get("series"),
-        self.data.get("version"),
-        self.data.get("batch"),
-        self.data.get("owner_id"),
-        (self.data.get("rarity") or "COMMON"),
-        qtype,
-        self.currency,
-        rate_value,
-        self.data.get("title"),
-        self.data.get("image_url"))
+            """,
+            self.user_id,
+            self.data.get("series"),
+            self.data.get("version"),
+            self.data.get("batch"),
+            self.data.get("owner_id"),
+            (self.data.get("rarity") or "COMMON"),
+            qtype,
+            self.currency,
+            rate_value,
+            self.data.get("title"),
+            self.data.get("image_url")
+        )
 
-        # ✅ Rappel des fees
+        # ✅ Rappel des fees (centralisé)
         if self.queue_display in FEES:
             fee_msg = f"💰 Pay fees to <@723441401211256842>\n{self.queue_display}: {FEES[self.queue_display]}"
             try:
@@ -221,7 +250,7 @@ class ConfigView(discord.ui.View):
                 except discord.HTTPException:
                     pass
 
-        # ✅ Confirmation au joueur
+        # ✅ Confirmation au joueur avec Status: PENDING
         confirm = discord.Embed(
             title=f"Auction #{rec['id']} submitted",
             description="Your auction was logged for staff review.",
@@ -230,7 +259,7 @@ class ConfigView(discord.ui.View):
         confirm.add_field(name="Queue", value=self.queue_display, inline=True)
         confirm.add_field(name="Currency", value=self.currency, inline=True)
         confirm.add_field(name="Rate", value=rate_value if rate_value else "—", inline=True)
-        confirm.add_field(name="Status", value="PENDING ⏳", inline=True)  # ✅ Ajout
+        confirm.add_field(name="Status", value="PENDING ⏳", inline=True)
         if rec.get("image_url"):
             confirm.set_thumbnail(url=rec["image_url"])
         confirm.set_footer(text="You will be notified after staff decision.")
@@ -241,7 +270,7 @@ class ConfigView(discord.ui.View):
             await interaction.followup.send(embed=confirm, view=None)
         self.stop()
 
-        # ✅ Log staff
+        # ✅ Log staff (utilise StaffReview.log_submission s'il est chargé)
         staff_cog = self.bot.get_cog("StaffReview")
         if staff_cog and hasattr(staff_cog, "log_submission"):
             await staff_cog.log_submission(rec)
