@@ -5,6 +5,7 @@ from discord.ext import commands
 from typing import Optional, Dict
 from datetime import date
 from discord import app_commands
+from .admin_guard import is_staff
 
 RARITY_FROM_EMOJI_ID = {
     1342202203515125801: "UR",
@@ -84,6 +85,7 @@ def parse_event_or_special(embed_dict: Dict) -> Dict[str, Optional[str]]:
         special_icon = "✨"
 
     return {"event": event_icon, "special": special_icon}
+
 # --- Log utilitaire ---
 async def log_card_ready(bot: commands.Bot, auction: Dict):
     guild = bot.get_guild(bot.guild_id)
@@ -125,8 +127,6 @@ async def mark_auction_ready(bot: commands.Bot, pool, auction_id: int):
     if auction:
         await log_card_ready(bot, dict(auction))
     return auction
-
-
 class AuctionCore(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -178,15 +178,25 @@ class AuctionCore(commands.Cog):
 
         await self.bot.redis.set(f"mazoku:card:{owner_id}", json.dumps(payload), ex=600)
 
-    @app_commands.command(name="auction-force-ready", description="Force an auction to READY and log it (admin).")
-    @app_commands.default_permissions(administrator=True)
-    async def auction_force_ready(self, interaction: discord.Interaction, auction_id: int):
+    # --- Commande staff ---
+    @app_commands.command(
+        name="auction-force-ready",
+        description="Force an auction to READY and log it (staff only)."
+    )
+    @is_staff()  # ✅ Seuls les rôles staff définis dans admin_guard.py peuvent exécuter
+    async def auction_force_ready(self, interaction: discord.Interaction, auction_id: str):
         await interaction.response.defer(ephemeral=True)
         auction = await mark_auction_ready(self.bot, self.bot.pg, auction_id)
         if auction:
-            await interaction.followup.send(f"✅ Auction #{auction_id} forced to READY and logged.", ephemeral=True)
+            await interaction.followup.send(
+                f"✅ Auction {auction_id} forced to READY and logged.",
+                ephemeral=True
+            )
         else:
-            await interaction.followup.send(f"❌ Auction #{auction_id} not found.", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Auction {auction_id} not found.",
+                ephemeral=True
+            )
 
 
 # --- Init DB ---
