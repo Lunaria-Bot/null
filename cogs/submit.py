@@ -240,7 +240,7 @@ class ConfigView(discord.ui.View):
             )
         except asyncpg.UniqueViolationError:
             return await interaction.response.send_message(
-                "⚠️ Tu as déjà soumis cette carte, impossible de la soumettre à nouveau.",
+                "⚠️ You can't submit two times the same card",
                 ephemeral=True
             )
 
