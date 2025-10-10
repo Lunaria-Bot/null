@@ -2,8 +2,8 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from .utils import redis_json_load, queue_display_to_type
-from .admin_guard import is_staff  # ✅ Import du décorateur staff
 
+# ✅ Options de sélection
 QUEUE_OPTIONS = [
     discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
     discord.SelectOption(label="Skip queue", value="Skip queue", emoji="⏭️", description="Skip ahead in the queue"),
@@ -17,6 +17,14 @@ CURRENCY_OPTIONS = [
     discord.SelectOption(label="PayPal (CM only)", value="PAYPAL", emoji="💳", description="Only valid for Card Maker"),
 ]
 
+# ✅ Tarifs centralisés
+FEES = {
+    "Normal queue": "500 BS or 3 MS",
+    "Skip queue": "2000 BS or 10 MS",
+    "Card Maker": "Negotiated fee (PayPal or special terms)"
+}
+
+
 def make_progress_footer(queue: str | None, currency: str | None, rate: str | None) -> str:
     done = 0
     total = 3
@@ -28,6 +36,7 @@ def make_progress_footer(queue: str | None, currency: str | None, rate: str | No
     else:
         done += 1
     return f"Setup progress: {done}/{total}"
+
 
 def build_preview_embed(user_id: int, data: dict, queue_display: str | None, currency: str | None, rate: str | None) -> discord.Embed:
     title = data.get("title") or "Unknown Card"
@@ -90,29 +99,6 @@ class Submit(commands.Cog):
             await interaction.response.send_message("I sent you a private message to complete the submission.", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("Enable your DMs so I can send you the form.", ephemeral=True)
-
-
-class QueueSelect(discord.ui.Select):
-    def __init__(self, parent_view: "ConfigView"):
-        super().__init__(placeholder="Select your queue", min_values=1, max_values=1, options=QUEUE_OPTIONS)
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        self.parent_view.queue_display = self.values[0]
-        await self.parent_view.refresh(interaction, note=f"Queue selected: {self.parent_view.queue_display}")
-
-
-class CurrencySelect(discord.ui.Select):
-    def __init__(self, parent_view: "ConfigView"):
-        super().__init__(placeholder="Select currency", min_values=1, max_values=1, options=CURRENCY_OPTIONS)
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        # Stocke la value (ex: "PAYPAL"), pas le label
-        self.parent_view.currency = self.values[0]
-        await self.parent_view.refresh(interaction, note=f"Currency set: {self.parent_view.currency}")
-
-
 class ConfigView(discord.ui.View):
     def __init__(self, bot, user_id, data):
         super().__init__(timeout=600)
@@ -186,9 +172,6 @@ class ConfigView(discord.ui.View):
     async def on_submit(self, interaction: discord.Interaction):
         qtype = queue_display_to_type(self.queue_display)
 
-        # Debug print pour vérifier ce qu'on reçoit
-        print("DEBUG SUBMIT:", qtype, self.currency)
-
         if qtype == "CARD_MAKER":
             if str(self.currency).upper() != "PAYPAL":
                 return await interaction.response.send_message(
@@ -209,6 +192,7 @@ class ConfigView(discord.ui.View):
                 ephemeral=True
             )
 
+        # ✅ Insertion en DB avec status='PENDING'
         rec = await self.bot.pg.fetchrow("""
             INSERT INTO auctions (user_id, series, version, batch_no, owner_id, rarity, queue_type, currency, rate, status, title, image_url)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11)
@@ -226,21 +210,9 @@ class ConfigView(discord.ui.View):
         self.data.get("title"),
         self.data.get("image_url"))
 
-        # Log la soumission dans le canal de queue (StaffReview.log_submission)
-        staff_cog = self.bot.get_cog("StaffReview")
-        if staff_cog and hasattr(staff_cog, "log_submission"):
-            await staff_cog.log_submission(rec)
-
-        # Message de rappel pour les fees / CM
-        fee_msg = None
-        if self.queue_display == "Normal queue":
-            fee_msg = "💰 Pay fees to <@723441401211256842>\nNormal Queue: 500 bs or 3ms "
-        elif self.queue_display == "Skip queue":
-            fee_msg = "💰 Pay fees to <@723441401211256842>\nSkip Queue: 2000bs or 10ms "
-        elif self.queue_display == "Card Maker":
-            fee_msg = "💰 Pay fees to <@723441401211256842>\nSkip Queue: 2000bs or 10ms "
-
-        if fee_msg:
+        # ✅ Rappel des fees
+        if self.queue_display in FEES:
+            fee_msg = f"💰 Pay fees to <@723441401211256842>\n{self.queue_display}: {FEES[self.queue_display]}"
             try:
                 await interaction.user.send(fee_msg)
             except discord.Forbidden:
@@ -249,6 +221,7 @@ class ConfigView(discord.ui.View):
                 except discord.HTTPException:
                     pass
 
+        # ✅ Confirmation au joueur
         confirm = discord.Embed(
             title=f"Auction #{rec['id']} submitted",
             description="Your auction was logged for staff review.",
@@ -257,6 +230,7 @@ class ConfigView(discord.ui.View):
         confirm.add_field(name="Queue", value=self.queue_display, inline=True)
         confirm.add_field(name="Currency", value=self.currency, inline=True)
         confirm.add_field(name="Rate", value=rate_value if rate_value else "—", inline=True)
+        confirm.add_field(name="Status", value="PENDING ⏳", inline=True)  # ✅ Ajout
         if rec.get("image_url"):
             confirm.set_thumbnail(url=rec["image_url"])
         confirm.set_footer(text="You will be notified after staff decision.")
@@ -266,6 +240,11 @@ class ConfigView(discord.ui.View):
         except discord.InteractionResponded:
             await interaction.followup.send(embed=confirm, view=None)
         self.stop()
+
+        # ✅ Log staff
+        staff_cog = self.bot.get_cog("StaffReview")
+        if staff_cog and hasattr(staff_cog, "log_submission"):
+            await staff_cog.log_submission(rec)
 
     async def on_cancel(self, interaction: discord.Interaction):
         cancel = discord.Embed(
