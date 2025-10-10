@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from .utils import redis_json_load, queue_display_to_type
+from .admin_guard import is_staff  # ✅ Import du décorateur staff
 
 QUEUE_OPTIONS = [
     discord.SelectOption(label="Normal queue", value="Normal queue", emoji="🟩", description="Standard posting order"),
