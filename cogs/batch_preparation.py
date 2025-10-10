@@ -34,47 +34,60 @@ class BatchPreparation(commands.Cog):
         await self.bot.pg.execute("DELETE FROM batch_items WHERE batch_id=$1", bid)
         await interaction.followup.send(f"Batch #{bid} cleared.", ephemeral=True)
 
-    @app_commands.command(
-        name="batch-fill",
-        description="Fill batch with READY auctions (15 Normal max, unlimited Skip & CardMaker)."
-    )
-    @is_staff()
-    async def batch_fill(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        bid = await get_or_create_today_batch(self.bot.pg)
+  @app_commands.command(
+    name="batch-fill",
+    description="Fill batch with READY auctions (15 Normal max, unlimited Skip & CardMaker)."
+)
+@is_staff()
+async def batch_fill(self, interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    bid = await get_or_create_today_batch(self.bot.pg)
 
-        normals = await self.bot.pg.fetch("""
-            SELECT id FROM auctions
-            WHERE status='READY' AND queue_type='NORMAL'
-            ORDER BY id ASC
-            LIMIT 15
-        """)
+    normals = await self.bot.pg.fetch("""
+        SELECT id, user_id, title, version, rarity
+        FROM auctions
+        WHERE status='READY' AND queue_type='NORMAL'
+        ORDER BY id ASC
+        LIMIT 15
+    """)
 
-        skips = await self.bot.pg.fetch("""
-            SELECT id FROM auctions
-            WHERE status='READY' AND queue_type='SKIP'
-            ORDER BY id ASC
-        """)
+    skips = await self.bot.pg.fetch("""
+        SELECT id, user_id, title, version, rarity
+        FROM auctions
+        WHERE status='READY' AND queue_type='SKIP'
+        ORDER BY id ASC
+    """)
 
-        cms = await self.bot.pg.fetch("""
-            SELECT id FROM auctions
-            WHERE status='READY' AND queue_type='CARD_MAKER'
-            ORDER BY id ASC
-        """)
+    cms = await self.bot.pg.fetch("""
+        SELECT id, user_id, title, version, rarity
+        FROM auctions
+        WHERE status='READY' AND queue_type='CARD_MAKER'
+        ORDER BY id ASC
+    """)
 
-        position = 1
-        for row in normals + skips + cms:
-            await self.bot.pg.execute(
-                "INSERT INTO batch_items (batch_id, auction_id, position) VALUES ($1,$2,$3)",
-                bid, row["id"], position
-            )
-            position += 1
+    # ✅ Filtrage des doublons (même user + même carte)
+    seen = set()
+    unique = []
+    for row in normals + skips + cms:
+        key = (row["user_id"], row["title"], row["version"], row["rarity"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(row)
 
-        await interaction.followup.send(
-            f"Batch #{bid} filled with {position-1} items "
-            f"({len(normals)} Normal, {len(skips)} Skip, {len(cms)} CardMaker).",
-            ephemeral=True
+    # ✅ Insertion dans batch_items
+    position = 1
+    for row in unique:
+        await self.bot.pg.execute(
+            "INSERT INTO batch_items (batch_id, auction_id, position) VALUES ($1,$2,$3)",
+            bid, row["id"], position
         )
+        position += 1
+
+    await interaction.followup.send(
+        f"Batch #{bid} filled with {position-1} unique items "
+        f"({len(normals)} Normal, {len(skips)} Skip, {len(cms)} CardMaker before filtering).",
+        ephemeral=True
+    )
 
     @app_commands.command(name="batch-view", description="View the cards in today's batch (with pagination).")
     @app_commands.describe(date="Optional date (YYYY-MM-DD)")
